@@ -1,0 +1,371 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Kavak AI Agent - WhatsApp Chatbot using OpenAI and Twilio
+
+Globals:
+  Function:
+    Runtime: python3.9
+    MemorySize: 256
+    Timeout: 30
+    Environment:
+      Variables:
+        STAGE: !Ref Stage
+        OPENAI_API_KEY: !Ref OpenAIApiKey
+        TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+        TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+        TWILIO_PHONE_NUMBER: !Ref TwilioPhoneNumber
+        MODEL_NAME: !Ref ModelName
+        TEMPERATURE: !Ref Temperature
+        MAX_TOKENS: !Ref MaxTokens
+        CATALOG_TABLE: !Ref CatalogTable
+        EMBEDDINGS_TABLE: !Ref EmbeddingsTable
+        CATALOG_BUCKET: !Ref CatalogBucket
+  Api:
+    Cors:
+      AllowMethods: "'POST,OPTIONS'"
+      AllowHeaders: "'Content-Type,X-Twilio-Signature'"
+      AllowOrigin: "'*'"
+
+Parameters:
+  Stage:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - prod
+      - stage
+    Description: Deployment stage (prod or stage)
+
+  OpenAIApiKey:
+    Type: String
+    Description: OpenAI API Key
+    NoEcho: true
+
+  TwilioAccountSid:
+    Type: String
+    Description: Twilio Account SID
+    NoEcho: true
+
+  TwilioAuthToken:
+    Type: String
+    Description: Twilio Auth Token
+    NoEcho: true
+
+  TwilioPhoneNumber:
+    Type: String
+    Description: Twilio Phone Number
+
+  ModelName:
+    Type: String
+    Default: gpt-4-turbo-preview
+    Description: OpenAI model name
+
+  Temperature:
+    Type: String
+    Default: '0.7'
+    Description: OpenAI temperature
+
+  MaxTokens:
+    Type: String
+    Default: '1000'
+    Description: OpenAI max tokens
+
+Resources:
+  # Lambda Functions
+  WebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: app
+      Handler: functions.webhook.handler.handler
+      Environment:
+        Variables:
+          PYTHONPATH: /var/task/app
+          STATE_MACHINE_ARN: !Ref ProcessMessageStateMachine
+      Events:
+        Webhook:
+          Type: Api
+          Properties:
+            Path: /webhook
+            Method: post
+      Policies:
+        - CloudWatchLogsFullAccess
+        - Statement:
+            - Effect: Allow
+              Action:
+                - states:StartExecution
+              Resource: !GetAtt ProcessMessageStateMachine.Arn
+
+  ValidateWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: app
+      Handler: functions.validate_webhook.handler.handler
+      Environment:
+        Variables:
+          PYTHONPATH: /var/task/app
+      Timeout: 10
+      Policies:
+        - CloudWatchLogsFullAccess
+
+  ProcessMessageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: app
+      Handler: functions.process_message.handler.handler
+      Environment:
+        Variables:
+          PYTHONPATH: /var/task/app
+          CATALOG_TABLE: !Ref CatalogTable
+          EMBEDDINGS_TABLE: !Ref EmbeddingsTable
+      Timeout: 240  # Aumentar a 60 segundos
+      MemorySize: 512  # Aumentar memoria para mejor rendimiento
+      Policies:
+        - CloudWatchLogsFullAccess
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConversationsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CatalogTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EmbeddingsTable
+        - S3ReadPolicy:
+            BucketName: !Ref CatalogBucket
+
+  SendResponseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: app
+      Handler: functions.send_response.handler.handler
+      Environment:
+        Variables:
+          PYTHONPATH: /var/task/app
+      Timeout: 10
+      Policies:
+        - CloudWatchLogsFullAccess
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource: !GetAtt ConversationsTable.Arn
+
+  SendErrorResponseFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: app
+      Handler: functions.send_error_response.handler.handler
+      Environment:
+        Variables:
+          PYTHONPATH: /var/task/app
+      Timeout: 10
+      Policies:
+        - CloudWatchLogsFullAccess
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource: !GetAtt ConversationsTable.Arn
+
+  UpdateEmbeddingsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: app
+      Handler: functions.update_embeddings.handler.handler
+      Environment:
+        Variables:
+          PYTHONPATH: /var/task/app
+          STAGE: !Ref Stage
+          OPENAI_API_KEY: !Ref OpenAIApiKey
+          CATALOG_TABLE: !Ref CatalogTable
+          EMBEDDINGS_TABLE: !Ref EmbeddingsTable
+          MODEL_NAME: !Ref ModelName
+      Timeout: 900  # 15 minutos
+      MemorySize: 1024  # 1GB de memoria
+      Events:
+        UpdateEmbeddingsSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(24 hours)  # Ejecutar cada 24 horas
+            Description: Actualiza los embeddings de los autos
+            Enabled: true
+      Policies:
+        - CloudWatchLogsFullAccess
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CatalogTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EmbeddingsTable
+
+  # Step Functions State Machine
+  ProcessMessageStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri: statemachine/process_message.asl.json
+      DefinitionSubstitutions:
+        ValidateWebhookFunction: !Ref ValidateWebhookFunction
+        ProcessMessageFunction: !Ref ProcessMessageFunction
+        SendResponseFunction: !Ref SendResponseFunction
+        SendErrorResponseFunction: !Ref SendErrorResponseFunction
+        ValidateWebhookFunctionArn: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ValidateWebhookFunction}"
+        ProcessMessageFunctionArn: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${ProcessMessageFunction}"
+        SendResponseFunctionArn: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${SendResponseFunction}"
+        SendErrorResponseFunctionArn: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${SendErrorResponseFunction}"
+      Tracing:
+        Enabled: true
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ValidateWebhookFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ProcessMessageFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SendResponseFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref SendErrorResponseFunction
+        - CloudWatchLogsFullAccess
+
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/vendedores/${AWS::StackName}-${Stage}
+      RetentionInDays: 30
+
+  StateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaRole
+      Policies:
+        - PolicyName: InvokeLambdaFunctions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt ValidateWebhookFunction.Arn
+                  - !GetAtt ProcessMessageFunction.Arn
+                  - !GetAtt SendResponseFunction.Arn
+                  - !GetAtt SendErrorResponseFunction.Arn
+
+  # DynamoDB Tables
+  ConversationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${AWS::StackName}-conversations-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: conversationId
+          AttributeType: S
+        - AttributeName: messageId
+          AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: conversationId
+          KeyType: HASH
+        - AttributeName: messageId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: SummaryIndex
+          KeySchema:
+            - AttributeName: conversationId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: UserIdIndex
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  CatalogTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${AWS::StackName}-catalog-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: stockId
+          AttributeType: S
+        - AttributeName: make
+          AttributeType: S
+        - AttributeName: model
+          AttributeType: S
+        - AttributeName: price
+          AttributeType: N
+        - AttributeName: year
+          AttributeType: N
+      KeySchema:
+        - AttributeName: stockId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: MakeModelIndex
+          KeySchema:
+            - AttributeName: make
+              KeyType: HASH
+            - AttributeName: model
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: PriceYearIndex
+          KeySchema:
+            - AttributeName: price
+              KeyType: HASH
+            - AttributeName: year
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  EmbeddingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${AWS::StackName}-embeddings-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: stockId
+          AttributeType: S
+        - AttributeName: lastUpdate
+          AttributeType: S
+      KeySchema:
+        - AttributeName: stockId
+          KeyType: HASH
+        - AttributeName: lastUpdate
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: LastUpdateIndex
+          KeySchema:
+            - AttributeName: lastUpdate
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  # S3 Bucket
+  CatalogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-catalog-${Stage}
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, DELETE]
+            AllowedOrigins: ['*']
+            MaxAge: 3000
+
+Outputs:
+  WebhookApi:
+    Description: API Gateway endpoint URL for Webhook function
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/webhook"
+
+  ProcessMessageStateMachineArn:
+    Description: ARN of the Process Message State Machine
+    Value: !Ref ProcessMessageStateMachine
+
+  CatalogBucketName:
+    Description: Name of the Catalog S3 Bucket
+    Value: !Ref CatalogBucket 

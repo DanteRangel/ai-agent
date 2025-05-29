@@ -1,0 +1,426 @@
+service: kavak-ai-agent
+
+frameworkVersion: '3'
+
+plugins:
+  # - serverless-dotenv-plugin
+  - serverless-offline
+  - serverless-step-functions
+
+custom:
+  dotenv:
+    path: .env
+    include:
+      - OPENAI_API_KEY
+      - TWILIO_ACCOUNT_SID
+      - TWILIO_AUTH_TOKEN
+      - TWILIO_PHONE_NUMBER
+      - MODEL_NAME
+      - TEMPERATURE
+      - MAX_TOKENS
+    logging: true
+
+layers:
+  base:
+    path: layers/base
+    name: ${self:service}-${opt:stage, self:provider.stage}-base
+    description: Base Python requirements (twilio)
+    compatibleRuntimes:
+      - python3.9
+  heavy:
+    path: layers/heavy
+    name: ${self:service}-${opt:stage, self:provider.stage}-heavy
+    description: Heavy Python requirements (numpy, openai)
+    compatibleRuntimes:
+      - python3.9
+
+package:
+  exclude:
+    - '!**'
+    - '**/__pycache__/**'
+    - '**/.pytest_cache/**'
+    - '**/*.pyc'
+    - 'node_modules/**'
+    - '.git/**'
+    - '.DS_Store'
+    - 'venv/**'
+    - '.serverless/**'
+    - '.env'
+    - 'README.md'
+    - 'requirements.txt'
+    - 'sample_caso_ai_engineer.csv'
+    - 'Proyecto de reclutamiento - AI Engineer.pdf'
+  include:
+    - 'app/**'
+    - 'layers/**'
+
+provider:
+  name: aws
+  runtime: python3.9
+  stage: ${opt:stage, 'dev'}
+  region: us-east-1
+  memorySize: 256
+  timeout: 30
+  environment:
+    STAGE: ${opt:stage, self:provider.stage}
+    OPENAI_API_KEY: ${env:OPENAI_API_KEY}
+    TWILIO_ACCOUNT_SID: ${env:TWILIO_ACCOUNT_SID}
+    TWILIO_AUTH_TOKEN: ${env:TWILIO_AUTH_TOKEN}
+    TWILIO_PHONE_NUMBER: ${env:TWILIO_PHONE_NUMBER}
+    MODEL_NAME: ${env:MODEL_NAME, 'gpt-4-turbo-preview'}
+    TEMPERATURE: ${env:TEMPERATURE, '0.7'}
+    MAX_TOKENS: ${env:MAX_TOKENS, '1000'}
+    CATALOG_TABLE: ${self:service}-catalog-${self:provider.stage}
+    EMBEDDINGS_TABLE: ${self:service}-embeddings-${self:provider.stage}
+    CATALOG_BUCKET: ${self:service}-catalog-${self:provider.stage}
+    STATE_MACHINE_ARN: !Ref ProcessMessageStateMachine
+  iam:
+    role:
+      statements:
+        # DynamoDB permissions
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:Scan
+            - dynamodb:DescribeTable
+          Resource:
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:service}-*-${self:provider.stage}
+            - arn:aws:dynamodb:${self:provider.region}:*:table/${self:service}-*-${self:provider.stage}/index/*
+
+        # S3 permissions
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:ListBucket
+          Resource:
+            - arn:aws:s3:::${self:service}-*-${self:provider.stage}
+            - arn:aws:s3:::${self:service}-*-${self:provider.stage}/*
+
+        # CloudWatch Logs permissions
+        - Effect: Allow
+          Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+          Resource: 
+            - arn:aws:logs:${self:provider.region}:*:log-group:/aws/lambda/${self:service}-*:*
+
+        # Lambda permissions
+        - Effect: Allow
+          Action:
+            - lambda:InvokeFunction
+          Resource:
+            - arn:aws:lambda:${self:provider.region}:*:function:${self:service}-*
+
+        # Step Functions permissions
+        - Effect: Allow
+          Action:
+            - states:StartExecution
+          Resource:
+            - arn:aws:states:${self:provider.region}:*:stateMachine:${self:service}-*
+
+functions:
+  webhook:
+    handler: app/functions/webhook/handler.handler
+    layers:
+      - !GetAtt BaseLambdaLayer.Arn
+      - !GetAtt HeavyLambdaLayer.Arn
+    events:
+      - http:
+          path: webhook
+          method: post
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - X-Amz-Date
+              - Authorization
+              - X-Api-Key
+              - X-Amz-Security-Token
+            allowCredentials: false
+    environment:
+      STATE_MACHINE_NAME: ${self:service}-${opt:stage, self:provider.stage}-process-message
+
+  validateWebhook:
+    handler: app/functions/validate_webhook/handler.handler
+    layers:
+      - !GetAtt BaseLambdaLayer.Arn
+    timeout: 10
+
+  processMessage:
+    handler: app/functions/process_message/handler.handler
+    layers:
+      - !GetAtt BaseLambdaLayer.Arn
+      - !GetAtt HeavyLambdaLayer.Arn
+    timeout: 25
+
+  sendResponse:
+    handler: app/functions/send_response/handler.handler
+    layers:
+      - !GetAtt BaseLambdaLayer.Arn
+    timeout: 10
+
+  sendErrorResponse:
+    handler: app/functions/send_error_response/handler.handler
+    layers:
+      - !GetAtt BaseLambdaLayer.Arn
+    timeout: 10
+
+stepFunctions:
+  validate: true
+  name: ${self:service}-${opt:stage, self:provider.stage}
+  stateMachines:
+    ProcessMessageStateMachine:
+      name: process-message-${opt:stage, self:provider.stage}
+      definition:
+        StartAt: ValidateRequest
+        States:
+          ValidateRequest:
+            Type: Task
+            Resource: ${validateWebhook.Arn}
+            Next: ProcessMessage
+            Catch:
+              - ErrorEquals: ["InvalidSignature", "MissingFields"]
+                Next: SendErrorResponse
+          ProcessMessage:
+            Type: Task
+            Resource: ${processMessage.Arn}
+            Next: SendResponse
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                Next: SendErrorResponse
+          SendResponse:
+            Type: Succeed
+          SendErrorResponse:
+            Type: Succeed
+
+resources:
+  Resources:
+    ConversationsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-conversations-${opt:stage, self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: conversationId
+            AttributeType: S
+          - AttributeName: messageId
+            AttributeType: S
+          - AttributeName: userId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: conversationId
+            KeyType: HASH
+          - AttributeName: messageId
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: SummaryIndex
+            KeySchema:
+              - AttributeName: conversationId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+          - IndexName: UserIdIndex
+            KeySchema:
+              - AttributeName: userId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+
+    CarCatalogBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders: ['*']
+              AllowedMethods: [GET, PUT, POST, DELETE]
+              AllowedOrigins: ['*']
+              MaxAge: 3000
+
+    CatalogTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-catalog-${opt:stage, self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: stockId
+            AttributeType: S
+          - AttributeName: make
+            AttributeType: S
+          - AttributeName: model
+            AttributeType: S
+          - AttributeName: price
+            AttributeType: N
+          - AttributeName: year
+            AttributeType: N
+        KeySchema:
+          - AttributeName: stockId
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: MakeModelIndex
+            KeySchema:
+              - AttributeName: make
+                KeyType: HASH
+              - AttributeName: model
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+          - IndexName: PriceYearIndex
+            KeySchema:
+              - AttributeName: price
+                KeyType: HASH
+              - AttributeName: year
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    EmbeddingsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-embeddings-${opt:stage, self:provider.stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: stockId
+            AttributeType: S
+          - AttributeName: lastUpdate
+            AttributeType: S
+        KeySchema:
+          - AttributeName: stockId
+            KeyType: HASH
+          - AttributeName: lastUpdate
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: LastUpdateIndex
+            KeySchema:
+              - AttributeName: lastUpdate
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+
+    ProcessMessageStateMachineRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: states.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: ${self:service}-${opt:stage, self:provider.stage}-process-message
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - dynamodb:Query
+                    - dynamodb:Scan
+                    - dynamodb:GetItem
+                    - dynamodb:PutItem
+                    - dynamodb:UpdateItem
+                    - dynamodb:DeleteItem
+                  Resource:
+                    - arn:aws:dynamodb:${self:provider.region}:*:table/${self:service}-*-${self:provider.stage}
+                    - arn:aws:dynamodb:${self:provider.region}:*:table/${self:service}-*-${self:provider.stage}/index/*
+                - Effect: Allow
+                  Action:
+                    - lambda:InvokeFunction
+                  Resource:
+                    - arn:aws:lambda:${self:provider.region}:*:function:${self:service}-*
+
+    ValidateWebhookLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: ${self:service}-${opt:stage, self:provider.stage}-validate-webhook-logs
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: 
+                    - arn:aws:logs:${self:provider.region}:*:log-group:/aws/lambda/${self:service}-*:*
+
+    ProcessMessageLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: ${self:service}-${opt:stage, self:provider.stage}-process-message-logs
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: 
+                    - arn:aws:logs:${self:provider.region}:*:log-group:/aws/lambda/${self:service}-*:*
+
+    SendResponseLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: ${self:service}-${opt:stage, self:provider.stage}-send-response-logs
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: 
+                    - arn:aws:logs:${self:provider.region}:*:log-group:/aws/lambda/${self:service}-*:*
+
+    SendErrorResponseLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: ${self:service}-${opt:stage, self:provider.stage}-send-error-response-logs
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource: 
+                    - arn:aws:logs:${self:provider.region}:*:log-group:/aws/lambda/${self:service}-*:* 

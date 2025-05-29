@@ -1,0 +1,79 @@
+{
+    "Comment": "Process WhatsApp message workflow",
+    "StartAt": "ValidateRequest",
+    "States": {
+        "ValidateRequest": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+                "FunctionName": "${ValidateWebhookFunctionArn}",
+                "Payload": {
+                    "body.$": "$.body",
+                    "headers.$": "$.headers"
+                }
+            },
+            "Next": "ExtractMessageData",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "InvalidSignature",
+                        "MissingFields"
+                    ],
+                    "Next": "SendErrorResponse",
+                    "ResultPath": "$.error"
+                }
+            ]
+        },
+        "ExtractMessageData": {
+            "Type": "Pass",
+            "Parameters": {
+                "from_number.$": "$.Payload.body.From",
+                "message_body.$": "$.Payload.body.Body"
+            },
+            "Next": "ProcessMessage"
+        },
+        "ProcessMessage": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+                "FunctionName": "${ProcessMessageFunctionArn}",
+                "Payload.$": "$"
+            },
+            "Next": "SendResponse",
+            "Catch": [
+                {
+                    "ErrorEquals": [
+                        "States.ALL"
+                    ],
+                    "Next": "SendErrorResponse",
+                    "ResultPath": "$.error"
+                }
+            ]
+        },
+        "SendResponse": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+                "FunctionName": "${SendResponseFunctionArn}",
+                "Payload": {
+                    "from_number.$": "$.Payload.from_number",
+                    "message_body.$": "$.Payload.message_body",
+                    "agent_message.$": "$.Payload.agent_message"
+                }
+            },
+            "End": true
+        },
+        "SendErrorResponse": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+                "FunctionName": "${SendErrorResponseFunctionArn}",
+                "Payload": {
+                    "from_number.$": "$.Payload.body.From",
+                    "error.$": "$.error"
+                }
+            },
+            "End": true
+        }
+    }
+}

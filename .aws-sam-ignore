@@ -1,0 +1,43 @@
+# Archivos y directorios de sistema
+.DS_Store
+.git/
+.gitignore
+.aws-sam/
+.serverless/
+
+# Archivos de configuración y documentación
+README.md
+env.json
+template.yaml
+serverless.yml
+
+# Directorios de desarrollo
+scripts/
+statemachine/
+layers/
+
+# Archivos de despliegue
+*-deployment-bucket/
+.aws-sam/
+
+# Archivos de caché y logs
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.log
+
+# Archivos de entorno virtual
+venv/
+.env/
+.venv/
+ENV/
+
+# Archivos de IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+node_modules/
