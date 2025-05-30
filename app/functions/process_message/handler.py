@@ -5,6 +5,7 @@ from openai import OpenAI
 from core.services.conversation import ConversationService, function_schemas, available_functions
 from core.services.car_recommender import CarRecommender
 from core.services.prompt_optimizer import PromptOptimizer
+from datetime import datetime
 
 # Inicializar servicios
 conversation_service = ConversationService()
@@ -25,6 +26,9 @@ def process_message(from_number: str, message_body: str) -> str:
     """
     try:
         print(f"[DEBUG] Iniciando procesamiento de mensaje de {from_number}: {message_body}")
+        
+        # Inicializar agent_message
+        agent_message = ""
         
         # Obtener contexto de conversación
         print("[DEBUG] Obteniendo contexto de conversación...")
@@ -85,6 +89,47 @@ def process_message(from_number: str, message_body: str) -> str:
                 if function_name in ["get_car_recommendations", "search_by_make_model", "search_by_price_range"]:
                     function_response = prompt_optimizer.compress_recommendations(function_response)
                     print(f"[DEBUG] Recomendaciones comprimidas: {json.dumps(function_response, ensure_ascii=False)}")
+                elif function_name == "send_msat":
+                    print("[DEBUG] Procesando respuesta de send_msat...")
+                    success, msat_message = function_response
+                    print(f"[DEBUG] Resultado send_msat - success: {success}, message: {msat_message}")
+                    if success:
+                        # Guardar MSAT en la conversación
+                        print("[DEBUG] Guardando MSAT en la conversación...")
+                        conversation_service.save_message(
+                            whatsapp_number=from_number,
+                            user_message=message_body,
+                            agent_message=msat_message,
+                            is_msat=True
+                        )
+                        print("[DEBUG] MSAT guardado exitosamente")
+                        agent_message = msat_message
+                        print("[DEBUG] Retornando mensaje MSAT directamente")
+                        return agent_message
+                    else:
+                        function_response = "Lo siento, hubo un error al enviar la encuesta de satisfacción."
+                elif function_name == "process_msat":
+                    print("[DEBUG] Procesando respuesta de process_msat...")
+                    # Asegurar que usamos el mismo número de teléfono que viene en el evento
+                    function_args["from_number"] = from_number
+                    function_response = function_to_call(**function_args)
+                    success, rating, error_message = function_response
+                    print(f"[DEBUG] Resultado process_msat - success: {success}, rating: {rating}, error: {error_message}")
+                    
+                    if not success:
+                        agent_message = error_message
+                        print("[DEBUG] Retornando mensaje de error de validación")
+                        return ""
+                    
+                    # Guardar la respuesta del MSAT usando el mismo número de teléfono
+                    success, thank_you = conversation_service.save_msat_response(from_number, rating)
+                    if not success:
+                        print("[DEBUG] Error al guardar respuesta MSAT")
+                        return ""
+                    
+                    agent_message = thank_you
+                    print("[DEBUG] Respuesta MSAT guardada exitosamente")
+                    return agent_message
                 
                 messages.append({
                     "role": "tool",
@@ -93,28 +138,47 @@ def process_message(from_number: str, message_body: str) -> str:
                     "content": json.dumps(function_response)
                 })
             
-            print("[DEBUG] Llamando a OpenAI por segunda vez...")
-            second_response = client.chat.completions.create(
-                model=os.environ.get("MODEL_NAME", "gpt-4-turbo-preview"),
-                messages=messages,
-                temperature=float(os.environ.get("TEMPERATURE", "0.7")),
-                max_tokens=int(os.environ.get("MAX_TOKENS", "1000"))
-            )
-            
-            agent_message = second_response.choices[0].message.content
-            print(f"[DEBUG] Respuesta final de OpenAI: {agent_message}")
+            # Solo hacer segunda llamada a OpenAI si no es un MSAT
+            if not any(tool_call.function.name in ["send_msat", "process_msat"] for tool_call in response_message.tool_calls):
+                print("[DEBUG] Llamando a OpenAI por segunda vez...")
+                second_response = client.chat.completions.create(
+                    model=os.environ.get("MODEL_NAME", "gpt-4-turbo-preview"),
+                    messages=messages,
+                    temperature=float(os.environ.get("TEMPERATURE", "0.7")),
+                    max_tokens=int(os.environ.get("MAX_TOKENS", "1000"))
+                )
+                
+                agent_message = second_response.choices[0].message.content
+                print(f"[DEBUG] Respuesta final de OpenAI: {agent_message}")
+                
+                # Guardar conversación normal
+                print("[DEBUG] Guardando conversación normal...")
+                conversation_service.save_message(
+                    whatsapp_number=from_number,
+                    user_message=message_body,
+                    agent_message=agent_message,
+                    is_msat=False
+                )
+                print("[DEBUG] Conversación guardada exitosamente")
+            else:
+                print("[DEBUG] Omitiendo segunda llamada a OpenAI para MSAT")
+                # Si llegamos aquí, significa que hubo un error en el MSAT
+                if not agent_message:
+                    agent_message = "Lo siento, hubo un error al procesar tu mensaje. Por favor, intenta de nuevo."
+                    print("[DEBUG] No se pudo procesar el MSAT, enviando mensaje de error")
         else:
             agent_message = response_message.content
             print(f"[DEBUG] Respuesta directa de OpenAI: {agent_message}")
-        
-        # Guardar la conversación
-        print("[DEBUG] Guardando conversación...")
-        conversation_service.save_message(
-            whatsapp_number=from_number,
-            user_message=message_body,
-            agent_message=agent_message
-        )
-        print("[DEBUG] Conversación guardada exitosamente")
+            
+            # Guardar conversación normal
+            print("[DEBUG] Guardando conversación normal...")
+            conversation_service.save_message(
+                whatsapp_number=from_number,
+                user_message=message_body,
+                agent_message=agent_message,
+                is_msat=False
+            )
+            print("[DEBUG] Conversación guardada exitosamente")
         
         return agent_message
         

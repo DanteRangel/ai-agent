@@ -70,6 +70,50 @@ Parameters:
     Description: OpenAI max tokens
 
 Resources:
+  # API Gateway
+  KavakApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "${AWS::StackName}"
+      Description: !Sub "API Gateway for ${AWS::StackName}"
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  ApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref KavakApi
+      ParentId: !GetAtt KavakApi.RootResourceId
+      PathPart: webhook
+
+  ApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref KavakApi
+      ResourceId: !Ref ApiResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebhookFunction.Arn}/invocations"
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiMethod
+    Properties:
+      RestApiId: !Ref KavakApi
+      Description: !Sub "Deployment for ${AWS::StackName}"
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref ApiDeployment
+      RestApiId: !Ref KavakApi
+      StageName: !Ref Stage
+      Description: !Sub "Stage for ${AWS::StackName}"
+
   # Lambda Functions
   WebhookFunction:
     Type: AWS::Serverless::Function
@@ -80,12 +124,6 @@ Resources:
         Variables:
           PYTHONPATH: /var/task/app
           STATE_MACHINE_ARN: !Ref ProcessMessageStateMachine
-      Events:
-        Webhook:
-          Type: Api
-          Properties:
-            Path: /webhook
-            Method: post
       Policies:
         - CloudWatchLogsFullAccess
         - Statement:
@@ -93,6 +131,19 @@ Resources:
               Action:
                 - states:StartExecution
               Resource: !GetAtt ProcessMessageStateMachine.Arn
+        - Statement:
+            - Effect: Allow
+              Action:
+                - apigateway:POST
+              Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${KavakApi}/*/*/*"
+
+  WebhookPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WebhookFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${KavakApi}/*/*/*"
 
   ValidateWebhookFunction:
     Type: AWS::Serverless::Function
@@ -360,7 +411,7 @@ Resources:
 Outputs:
   WebhookApi:
     Description: API Gateway endpoint URL for Webhook function
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/webhook"
+    Value: !Sub "https://${KavakApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/webhook"
 
   ProcessMessageStateMachineArn:
     Description: ARN of the Process Message State Machine
