@@ -19,6 +19,7 @@ Globals:
         MAX_TOKENS: !Ref MaxTokens
         CATALOG_TABLE: !Ref CatalogTable
         EMBEDDINGS_TABLE: !Ref EmbeddingsTable
+        PROSPECTS_TABLE: !Ref ProspectsTable
         CATALOG_BUCKET: !Ref CatalogBucket
   Api:
     Cors:
@@ -167,8 +168,9 @@ Resources:
           PYTHONPATH: /var/task/app
           CATALOG_TABLE: !Ref CatalogTable
           EMBEDDINGS_TABLE: !Ref EmbeddingsTable
-      Timeout: 240  # Aumentar a 60 segundos
-      MemorySize: 512  # Aumentar memoria para mejor rendimiento
+          PROSPECTS_TABLE: !Ref ProspectsTable
+      Timeout: 240
+      MemorySize: 512
       Policies:
         - CloudWatchLogsFullAccess
         - DynamoDBCrudPolicy:
@@ -177,6 +179,8 @@ Resources:
             TableName: !Ref CatalogTable
         - DynamoDBCrudPolicy:
             TableName: !Ref EmbeddingsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ProspectsTable
         - S3ReadPolicy:
             BucketName: !Ref CatalogBucket
 
@@ -393,6 +397,35 @@ Resources:
           KeySchema:
             - AttributeName: lastUpdate
               KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+
+  ProspectsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${AWS::StackName}-prospects-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: whatsappNumber
+          AttributeType: S
+        - AttributeName: appointmentId
+          AttributeType: S
+        - AttributeName: appointmentDate
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+      KeySchema:
+        - AttributeName: whatsappNumber
+          KeyType: HASH
+        - AttributeName: appointmentId
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: DateStatusIndex
+          KeySchema:
+            - AttributeName: appointmentDate
+              KeyType: HASH
+            - AttributeName: status
+              KeyType: RANGE
           Projection:
             ProjectionType: ALL
 

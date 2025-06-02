@@ -50,18 +50,24 @@ class CarRecommender:
         self.embeddings_db = self.dynamodb.Table(self.embeddings_table)
         self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-    def _normalize_car_text(self, car: Dict[str, Any]) -> str:
+    def _normalize_car_text(self, car: Dict[str, Any], text_type: str = "full") -> str:
         """
         Normaliza el texto de un auto para búsqueda semántica.
-        Incluye información relevante como marca, modelo, versión, año, precio,
-        kilometraje y características disponibles.
+        Puede generar texto para make, model o full description.
         
         Args:
             car: Diccionario con datos del auto
+            text_type: Tipo de texto a generar ("make", "model", o "full")
             
         Returns:
             Texto normalizado para embeddings
         """
+        if text_type == "make":
+            return normalize_text(car.get('make', ''))
+        elif text_type == "model":
+            return normalize_text(f"{car.get('make', '')} {car.get('model', '')}")
+        
+        # Para text_type == "full", incluir toda la información
         # Información básica
         basic_info = [
             car.get('make', ''),
@@ -111,6 +117,54 @@ class CarRecommender:
         # Normalizar el texto final
         return normalize_text(text)
 
+    def _update_embeddings_with_type(self) -> None:
+        """
+        Actualiza los embeddings existentes agregando el atributo embeddingType.
+        Este método debe ejecutarse una sola vez después de crear el GSI.
+        """
+        try:
+            print("[DEBUG] Actualizando embeddings con tipo...")
+            
+            # Obtener todos los embeddings
+            response = self.embeddings_db.scan()
+            items = response.get("Items", [])
+            
+            for item in items:
+                stock_id = item["stockId"]
+                update_expressions = []
+                expression_values = {}
+                
+                # Determinar el tipo basado en los embeddings existentes
+                if "make_embedding" in item:
+                    update_expressions.append("embeddingType = :make")
+                    expression_values[":make"] = "make"
+                if "model_embedding" in item:
+                    update_expressions.append("embeddingType = :model")
+                    expression_values[":model"] = "model"
+                if "full_embedding" in item:
+                    update_expressions.append("embeddingType = :full")
+                    expression_values[":full"] = "full"
+                
+                # Actualizar cada tipo
+                for update_expr in update_expressions:
+                    try:
+                        self.embeddings_db.update_item(
+                            Key={"stockId": stock_id},
+                            UpdateExpression=f"SET {update_expr}",
+                            ExpressionAttributeValues=expression_values
+                        )
+                        print(f"[DEBUG] Actualizado {stock_id} con tipo {expression_values}")
+                    except Exception as e:
+                        print(f"[ERROR] Error actualizando {stock_id}: {str(e)}")
+                        continue
+            
+            print("[DEBUG] Actualización de tipos completada")
+            
+        except Exception as e:
+            print(f"[ERROR] Error en actualización de tipos: {str(e)}")
+            import traceback
+            print(f"[ERROR] Error traceback: {traceback.format_exc()}")
+
     def _ensure_embeddings(self) -> None:
         """
         Verifica y actualiza los embeddings si es necesario.
@@ -120,6 +174,21 @@ class CarRecommender:
         3. El texto normalizado ha cambiado
         """
         try:
+            # Verificar si necesitamos actualizar los tipos
+            try:
+                self.embeddings_db.query(
+                    IndexName='EmbeddingTypeIndex',
+                    KeyConditionExpression='embeddingType = :type',
+                    ExpressionAttributeValues={':type': 'make'},
+                    Limit=1
+                )
+            except Exception as e:
+                if 'ResourceNotFoundException' in str(e):
+                    print("[DEBUG] GSI no encontrado, actualizando tipos de embeddings...")
+                    self._update_embeddings_with_type()
+                else:
+                    raise e
+
             # Obtener todos los autos del catálogo
             catalog_response = self.catalog_db.scan()
             cars = catalog_response.get("Items", [])
@@ -138,38 +207,47 @@ class CarRecommender:
             for car in cars:
                 stock_id = car["stockId"]
                 
-                # Generar texto normalizado con toda la información relevante
-                normalized_text = self._normalize_car_text(car)
-                print(f"[DEBUG] Texto normalizado para {stock_id}: {normalized_text}")
+                # Generar textos normalizados para cada tipo
+                make_text = self._normalize_car_text(car, "make")
+                model_text = self._normalize_car_text(car, "model")
+                full_text = self._normalize_car_text(car, "full")
                 
                 # Verificar si necesita actualización
                 needs_update = (
                     stock_id not in existing_embeddings or
                     existing_embeddings[stock_id]["lastUpdate"] < update_threshold or
-                    normalize_text(existing_embeddings[stock_id].get("text", "")) != normalized_text
+                    normalize_text(existing_embeddings[stock_id].get("make_text", "")) != make_text or
+                    normalize_text(existing_embeddings[stock_id].get("model_text", "")) != model_text or
+                    normalize_text(existing_embeddings[stock_id].get("full_text", "")) != full_text
                 )
                 
                 if needs_update:
-                    print(f"[DEBUG] Actualizando embedding para {stock_id}...")
+                    print(f"[DEBUG] Actualizando embeddings para {stock_id}...")
                     
-                    # Obtener embedding
-                    embedding = self._get_embedding(normalized_text)
-                    if embedding:
+                    # Obtener embeddings para cada tipo
+                    make_embedding = self._get_embedding(make_text)
+                    model_embedding = self._get_embedding(model_text)
+                    full_embedding = self._get_embedding(full_text)
+                    
+                    if make_embedding and model_embedding and full_embedding:
                         # Guardar en DynamoDB
                         item = {
                             "stockId": stock_id,
                             "lastUpdate": now.isoformat(),
-                            "embedding": embedding,
-                            "text": normalized_text,
-                            "original_text": self._normalize_car_text(car)  # Guardar texto original también
+                            "make_embedding": make_embedding,
+                            "model_embedding": model_embedding,
+                            "full_embedding": full_embedding,
+                            "make_text": make_text,
+                            "model_text": model_text,
+                            "full_text": full_text
                         }
                         
                         try:
                             self.embeddings_db.put_item(Item=item)
-                            print(f"[DEBUG] Embedding actualizado para {stock_id}")
+                            print(f"[DEBUG] Embeddings actualizados para {stock_id}")
                         except Exception as db_error:
                             print(f"[ERROR] Error al guardar en DynamoDB: {str(db_error)}")
-                            print(f"[ERROR] Item que causó el error: {json.dumps({k: str(v) if k == 'embedding' else v for k, v in item.items()}, ensure_ascii=False)}")
+                            print(f"[ERROR] Item que causó el error: {json.dumps({k: str(v) if 'embedding' in k else v for k, v in item.items()}, ensure_ascii=False)}")
             
         except Exception as e:
             print(f"[ERROR] Error al verificar embeddings: {str(e)}")
@@ -200,15 +278,35 @@ class CarRecommender:
             print(f"Error al obtener embedding: {str(e)}")
             return []
 
-    def _get_catalog_embeddings(self) -> tuple[List[str], List[str], List[List[float]]]:
+    def _get_catalog_embeddings(
+        self, 
+        embedding_type: str = "full",
+        last_evaluated_key: Optional[Dict] = None,
+        batch_size: int = 100
+    ) -> tuple[List[str], List[str], List[List[float]], Optional[Dict]]:
         """
-        Obtiene los embeddings del catálogo desde DynamoDB.
+        Obtiene los embeddings del catálogo desde DynamoDB usando scan con paginación.
         
+        Args:
+            embedding_type: Tipo de embedding a obtener ("make", "model", o "full")
+            last_evaluated_key: Clave para paginación (opcional)
+            batch_size: Tamaño del lote a obtener
+            
         Returns:
-            Tupla con (textos, stock_ids, embeddings)
+            Tupla con (textos, stock_ids, embeddings, next_key)
         """
         try:
-            response = self.embeddings_db.scan()
+            # Construir parámetros de scan
+            scan_params = {
+                'Limit': batch_size
+            }
+            
+            # Agregar clave de paginación si existe
+            if last_evaluated_key:
+                scan_params['ExclusiveStartKey'] = last_evaluated_key
+            
+            # Ejecutar scan
+            response = self.embeddings_db.scan(**scan_params)
             items = response.get("Items", [])
             
             texts = []
@@ -217,19 +315,70 @@ class CarRecommender:
             
             for item in items:
                 # Usar el texto normalizado para búsquedas
-                texts.append(item["text"])  # Ya está normalizado
-                stock_ids.append(item["stockId"])
-                # Convertir embedding de Decimal a float
-                embedding = [float(x) for x in item["embedding"]]
-                embeddings.append(embedding)
+                text_key = f"{embedding_type}_text"
+                embedding_key = f"{embedding_type}_embedding"
+                
+                if text_key in item and embedding_key in item:
+                    texts.append(item[text_key])
+                    stock_ids.append(item["stockId"])
+                    # Convertir embedding de Decimal a float
+                    embedding = [float(x) for x in item[embedding_key]]
+                    embeddings.append(embedding)
             
-            return texts, stock_ids, embeddings
+            # Retornar también la clave para la siguiente página si existe
+            next_key = response.get('LastEvaluatedKey')
+            
+            return texts, stock_ids, embeddings, next_key
             
         except Exception as e:
             print(f"Error al obtener embeddings del catálogo: {str(e)}")
             import traceback
             print(f"[ERROR] Error traceback: {traceback.format_exc()}")
-            return [], [], []
+            return [], [], [], None
+
+    def get_all_catalog_embeddings(
+        self,
+        embedding_type: str = "full",
+        max_batches: int = 10
+    ) -> tuple[List[str], List[str], List[List[float]]]:
+        """
+        Obtiene todos los embeddings del catálogo usando paginación.
+        
+        Args:
+            embedding_type: Tipo de embedding a obtener ("make", "model", o "full")
+            max_batches: Número máximo de lotes a procesar
+            
+        Returns:
+            Tupla con (textos, stock_ids, embeddings)
+        """
+        all_texts = []
+        all_stock_ids = []
+        all_embeddings = []
+        last_key = None
+        batch_count = 0
+        
+        while batch_count < max_batches:
+            texts, stock_ids, embeddings, next_key = self._get_catalog_embeddings(
+                embedding_type,
+                last_key,
+                batch_size=100
+            )
+            
+            if not embeddings:
+                break
+                
+            all_texts.extend(texts)
+            all_stock_ids.extend(stock_ids)
+            all_embeddings.extend(embeddings)
+            
+            if not next_key:
+                break
+                
+            last_key = next_key
+            batch_count += 1
+            
+        print(f"[DEBUG] Se obtuvieron {len(all_embeddings)} embeddings en {batch_count} lotes")
+        return all_texts, all_stock_ids, all_embeddings
 
     def _calculate_similarity(
         self, 
@@ -292,8 +441,6 @@ class CarRecommender:
             # Normalizar la consulta
             normalized_query = normalize_text(query)
             print(f"[DEBUG] Buscando recomendaciones para: {normalized_query}")
-            print(f"[DEBUG] Tabla de catálogo: {self.catalog_table}")
-            print(f"[DEBUG] Tabla de embeddings: {self.embeddings_table}")
             
             # Obtener embedding de la consulta
             print("[DEBUG] Obteniendo embedding de la consulta...")
@@ -302,13 +449,12 @@ class CarRecommender:
                 print("[ERROR] No se pudo obtener el embedding de la consulta")
                 return []
 
-            # Obtener embeddings del catálogo
+            # Obtener todos los embeddings del catálogo
             print("[DEBUG] Obteniendo embeddings del catálogo...")
-            _, stock_ids, catalog_embeddings = self._get_catalog_embeddings()
+            _, stock_ids, catalog_embeddings = self.get_all_catalog_embeddings()
             if not catalog_embeddings:
                 print("[ERROR] No se encontraron embeddings en el catálogo")
                 return []
-            print(f"[DEBUG] Se encontraron {len(catalog_embeddings)} embeddings")
 
             # Calcular similitudes
             print("[DEBUG] Calculando similitudes...")
@@ -365,35 +511,37 @@ class CarRecommender:
         make: str = None,
         model: str = None,
         limit: int = 10,
-        min_similarity: float = 0.7
+        min_similarity: float = 0.7,
+        max_batches: int = 3  # Límite de lotes a procesar
     ) -> List[Dict[str, Any]]:
         """
         Busca autos por marca y/o modelo usando embeddings para búsqueda semántica.
+        Implementa paginación para manejar grandes conjuntos de datos.
         
         Args:
             make: Marca del auto (opcional)
             model: Modelo del auto (opcional)
             limit: Límite de resultados
             min_similarity: Umbral mínimo de similitud
+            max_batches: Número máximo de lotes a procesar
             
         Returns:
             Lista de autos encontrados
         """
         try:
-            # Construir query de búsqueda
-            search_terms = []
-            if make:
-                search_terms.append(make)
-            if model:
-                search_terms.append(model)
-            
-            if not search_terms:
+            if not make and not model:
                 print("[ERROR] Se requiere al menos marca o modelo para buscar")
                 return []
             
-            # Construir texto de búsqueda
-            search_text = " ".join(search_terms)
-            print(f"[DEBUG] Buscando por texto: {search_text}")
+            # Determinar el tipo de búsqueda y texto
+            if make and not model:
+                search_type = "make"
+                search_text = make
+            else:
+                search_type = "model"
+                search_text = f"{make or ''} {model or ''}".strip()
+            
+            print(f"[DEBUG] Buscando por tipo: {search_type}, texto: {search_text}")
             
             # Normalizar la consulta
             normalized_query = normalize_text(search_text)
@@ -406,24 +554,49 @@ class CarRecommender:
                 print("[ERROR] No se pudo obtener el embedding de la consulta")
                 return []
 
-            # Obtener embeddings del catálogo
-            print("[DEBUG] Obteniendo embeddings del catálogo...")
-            _, stock_ids, catalog_embeddings = self._get_catalog_embeddings()
-            if not catalog_embeddings:
+            # Obtener embeddings del catálogo con paginación
+            print(f"[DEBUG] Obteniendo embeddings del catálogo (tipo: {search_type})...")
+            all_texts = []
+            all_stock_ids = []
+            all_embeddings = []
+            last_key = None
+            batch_count = 0
+            
+            while batch_count < max_batches:
+                texts, stock_ids, embeddings, next_key = self._get_catalog_embeddings(
+                    search_type, 
+                    last_key,
+                    batch_size=100
+                )
+                
+                if not embeddings:
+                    break
+                    
+                all_texts.extend(texts)
+                all_stock_ids.extend(stock_ids)
+                all_embeddings.extend(embeddings)
+                
+                if not next_key:
+                    break
+                    
+                last_key = next_key
+                batch_count += 1
+                
+            if not all_embeddings:
                 print("[ERROR] No se encontraron embeddings en el catálogo")
                 return []
-            print(f"[DEBUG] Se encontraron {len(catalog_embeddings)} embeddings")
+            print(f"[DEBUG] Se encontraron {len(all_embeddings)} embeddings en {batch_count} lotes")
 
             # Calcular similitudes
             print("[DEBUG] Calculando similitudes...")
-            similarities = self._calculate_similarity(query_embedding, catalog_embeddings)
+            similarities = self._calculate_similarity(query_embedding, all_embeddings)
             if not similarities:
                 print("[ERROR] No se pudieron calcular similitudes")
                 return []
 
             # Ordenar por similitud
             print("[DEBUG] Ordenando resultados por similitud...")
-            stock_scores = list(zip(stock_ids, similarities))
+            stock_scores = list(zip(all_stock_ids, similarities))
             stock_scores.sort(key=lambda x: x[1], reverse=True)
             
             # Filtrar por similitud mínima y tomar los mejores

@@ -25,7 +25,10 @@ def process_message(from_number: str, message_body: str) -> str:
         Respuesta del agente
     """
     try:
-        print(f"[DEBUG] Iniciando procesamiento de mensaje de {from_number}: {message_body}")
+        print(f"[DEBUG] ===== INICIO DE PROCESAMIENTO =====")
+        print(f"[DEBUG] Timestamp: {datetime.now().isoformat()}")
+        print(f"[DEBUG] Número: {from_number}")
+        print(f"[DEBUG] Mensaje: {message_body}")
         
         # Inicializar agent_message
         agent_message = ""
@@ -36,6 +39,13 @@ def process_message(from_number: str, message_body: str) -> str:
             from_number,
             recent_messages=3
         ) or []  # Asegurar que sea una lista
+        
+        print(f"[DEBUG] Número de mensajes en contexto: {len(conversation_context)}")
+        for idx, msg in enumerate(conversation_context):
+            print(f"[DEBUG] Mensaje {idx + 1}:")
+            print(f"[DEBUG] - Rol: {msg['role']}")
+            print(f"[DEBUG] - Contenido: {msg['content']}")
+        
         print(f"[DEBUG] Contexto obtenido: {json.dumps(conversation_context, ensure_ascii=False)}")
         
         # Preparar mensajes para OpenAI
@@ -49,6 +59,7 @@ def process_message(from_number: str, message_body: str) -> str:
             
         # Agregar mensaje actual
         messages.append({"role": "user", "content": message_body})
+        print(f"[DEBUG] Total de mensajes para OpenAI: {len(messages)}")
         print(f"[DEBUG] Mensajes preparados para OpenAI: {json.dumps(messages, ensure_ascii=False)}")
         
         # Optimizar mensajes
@@ -57,9 +68,14 @@ def process_message(from_number: str, message_body: str) -> str:
             messages,
             max_tokens=int(os.environ.get("MAX_TOKENS", "1000"))
         )
+        print(f"[DEBUG] Total de mensajes después de optimización: {len(messages)}")
         
         # Obtener respuesta de OpenAI
         print("[DEBUG] Llamando a OpenAI...")
+        print(f"[DEBUG] Modelo: {os.environ.get('MODEL_NAME', 'gpt-4-turbo-preview')}")
+        print(f"[DEBUG] Temperature: {os.environ.get('TEMPERATURE', '0.7')}")
+        print(f"[DEBUG] Max tokens: {os.environ.get('MAX_TOKENS', '1000')}")
+        
         response = client.chat.completions.create(
             model=os.environ.get("MODEL_NAME", "gpt-4-turbo-preview"),
             messages=messages,
@@ -71,22 +87,43 @@ def process_message(from_number: str, message_body: str) -> str:
         
         response_message = response.choices[0].message
         print(f"[DEBUG] Respuesta inicial de OpenAI: {json.dumps(response_message.model_dump(), ensure_ascii=False)}")
+        print(f"[DEBUG] Finish reason: {response.choices[0].finish_reason}")
+        print(f"[DEBUG] Usage: {json.dumps(response.usage.model_dump(), ensure_ascii=False)}")
+        
+        # Analizar si se intentó usar alguna función
+        if response_message.tool_calls:
+            print("[DEBUG] OpenAI intentó usar funciones:")
+            for tool_call in response_message.tool_calls:
+                print(f"[DEBUG] - Función: {tool_call.function.name}")
+                print(f"[DEBUG] - Argumentos: {tool_call.function.arguments}")
+        else:
+            print("[DEBUG] OpenAI no intentó usar ninguna función")
+            print(f"[DEBUG] Contenido de la respuesta: {response_message.content}")
         
         # Procesar tool calls si existen
         if response_message.tool_calls:
             print("[DEBUG] Procesando tool calls...")
+            print(f"[DEBUG] Número de tool calls: {len(response_message.tool_calls)}")
             messages.append(response_message.model_dump())
             
-            for tool_call in response_message.tool_calls:
+            for idx, tool_call in enumerate(response_message.tool_calls):
+                print(f"[DEBUG] Procesando tool call {idx + 1} de {len(response_message.tool_calls)}")
                 function_name = tool_call.function.name
                 function_args = json.loads(tool_call.function.arguments)
                 print(f"[DEBUG] Ejecutando función {function_name} con args: {json.dumps(function_args, ensure_ascii=False)}")
+                
+                # Verificar si estamos en un estado apropiado para usar la función
+                if function_name in ["search_by_make_model", "search_by_price_range", "get_car_recommendations"]:
+                    if conversation_context[-1]["role"] == "assistant":
+                        print(f"[DEBUG] ADVERTENCIA: Intento de usar {function_name} en estado {conversation_context[-1]['content']}")
+                        print("[DEBUG] Ignorando función y continuando con conversación normal")
+                        continue
                 
                 function_to_call = available_functions[function_name]
                 function_response = function_to_call(**function_args)
                 print(f"[DEBUG] Respuesta de función {function_name}: {json.dumps(function_response, ensure_ascii=False)}")
                 
-                if function_name in ["get_car_recommendations", "search_by_make_model", "search_by_price_range"]:
+                if function_name in ["search_by_make_model", "search_by_price_range", "get_car_recommendations"]:
                     function_response = prompt_optimizer.compress_recommendations(function_response)
                     print(f"[DEBUG] Recomendaciones comprimidas: {json.dumps(function_response, ensure_ascii=False)}")
                 elif function_name == "send_msat":
@@ -137,10 +174,12 @@ def process_message(from_number: str, message_body: str) -> str:
                     "name": function_name,
                     "content": json.dumps(function_response)
                 })
+                print(f"[DEBUG] Tool call {idx + 1} procesado y agregado a mensajes")
             
             # Solo hacer segunda llamada a OpenAI si no es un MSAT
             if not any(tool_call.function.name in ["send_msat", "process_msat"] for tool_call in response_message.tool_calls):
                 print("[DEBUG] Llamando a OpenAI por segunda vez...")
+                print(f"[DEBUG] Total de mensajes para segunda llamada: {len(messages)}")
                 second_response = client.chat.completions.create(
                     model=os.environ.get("MODEL_NAME", "gpt-4-turbo-preview"),
                     messages=messages,
@@ -150,6 +189,8 @@ def process_message(from_number: str, message_body: str) -> str:
                 
                 agent_message = second_response.choices[0].message.content
                 print(f"[DEBUG] Respuesta final de OpenAI: {agent_message}")
+                print(f"[DEBUG] Finish reason (segunda llamada): {second_response.choices[0].finish_reason}")
+                print(f"[DEBUG] Usage (segunda llamada): {json.dumps(second_response.usage.model_dump(), ensure_ascii=False)}")
                 
                 # Guardar conversación normal
                 print("[DEBUG] Guardando conversación normal...")
@@ -162,10 +203,6 @@ def process_message(from_number: str, message_body: str) -> str:
                 print("[DEBUG] Conversación guardada exitosamente")
             else:
                 print("[DEBUG] Omitiendo segunda llamada a OpenAI para MSAT")
-                # Si llegamos aquí, significa que hubo un error en el MSAT
-                if not agent_message:
-                    agent_message = "Lo siento, hubo un error al procesar tu mensaje. Por favor, intenta de nuevo."
-                    print("[DEBUG] No se pudo procesar el MSAT, enviando mensaje de error")
         else:
             agent_message = response_message.content
             print(f"[DEBUG] Respuesta directa de OpenAI: {agent_message}")
@@ -180,6 +217,7 @@ def process_message(from_number: str, message_body: str) -> str:
             )
             print("[DEBUG] Conversación guardada exitosamente")
         
+        print(f"[DEBUG] ===== FIN DE PROCESAMIENTO =====")
         return agent_message
         
     except Exception as e:

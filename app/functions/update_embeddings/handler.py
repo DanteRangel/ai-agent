@@ -18,18 +18,24 @@ def _convert_to_decimal(obj):
         return {k: _convert_to_decimal(v) for k, v in obj.items()}
     return obj
 
-def _normalize_car_text(car: Dict[str, Any]) -> str:
+def _normalize_car_text(car: Dict[str, Any], text_type: str = "full") -> str:
     """
     Normaliza el texto de un auto para búsqueda semántica.
-    Incluye información relevante como marca, modelo, versión, año, precio,
-    kilometraje y características disponibles.
+    Puede generar texto para make, model o full description.
     
     Args:
         car: Diccionario con datos del auto
+        text_type: Tipo de texto a generar ("make", "model", o "full")
         
     Returns:
         Texto normalizado para embeddings
     """
+    if text_type == "make":
+        return normalize_text(car.get('make', ''))
+    elif text_type == "model":
+        return normalize_text(f"{car.get('make', '')} {car.get('model', '')}")
+    
+    # Para text_type == "full", incluir toda la información
     # Información básica
     basic_info = [
         car.get('make', ''),
@@ -88,81 +94,122 @@ def _process_batch(
 ) -> tuple[int, int, int]:
     """
     Procesa un lote de autos para actualizar sus embeddings.
-    
-    Args:
-        recommender: Instancia de CarRecommender
-        cars: Lista de autos a procesar
-        existing_embeddings: Diccionario de embeddings existentes
-        update_threshold: Umbral de actualización
-        now: Timestamp actual
-        
-    Returns:
-        Tupla con (total_processed, total_updated, total_errors)
     """
     total_processed = 0
     total_updated = 0
     total_errors = 0
+    total_skipped = 0  # Nuevo contador para registros saltados
     
     for car in cars:
         try:
             total_processed += 1
             stock_id = car["stockId"]
             
-            # Normalizar texto del auto
-            normalized_text = _normalize_car_text(car)
-            print(f"[DEBUG] Texto normalizado para {stock_id}: {normalized_text}")
+            # Generar textos normalizados para cada tipo
+            make_text = _normalize_car_text(car, "make")
+            model_text = _normalize_car_text(car, "model")
+            full_text = _normalize_car_text(car, "full")
+            
+            print(f"[DEBUG] Procesando {stock_id}:")
+            print(f"  - Make: {make_text}")
+            print(f"  - Model: {model_text}")
+            print(f"  - Full: {full_text}")
             
             # Verificar si necesita actualización
-            needs_update = (
-                stock_id not in existing_embeddings or
-                existing_embeddings[stock_id]["lastUpdate"] < update_threshold or
-                normalize_text(existing_embeddings[stock_id].get("text", "")) != normalized_text
-            )
+            if stock_id not in existing_embeddings:
+                print(f"  [DEBUG] {stock_id} no existe en embeddings")
+                needs_update = True
+            elif existing_embeddings[stock_id]["lastUpdate"] < update_threshold:
+                print(f"  [DEBUG] {stock_id} necesita actualización por tiempo")
+                needs_update = True
+            else:
+                # Verificar cambios en textos
+                existing_make = normalize_text(existing_embeddings[stock_id].get("make_text", ""))
+                existing_model = normalize_text(existing_embeddings[stock_id].get("model_text", ""))
+                existing_full = normalize_text(existing_embeddings[stock_id].get("full_text", ""))
+                
+                if existing_make != make_text:
+                    print(f"  [DEBUG] {stock_id} cambió make_text: {existing_make} -> {make_text}")
+                    needs_update = True
+                elif existing_model != model_text:
+                    print(f"  [DEBUG] {stock_id} cambió model_text: {existing_model} -> {model_text}")
+                    needs_update = True
+                elif existing_full != full_text:
+                    print(f"  [DEBUG] {stock_id} cambió full_text: {existing_full} -> {full_text}")
+                    needs_update = True
+                else:
+                    print(f"  [DEBUG] {stock_id} no necesita actualización")
+                    needs_update = False
+                    total_skipped += 1
             
             if needs_update:
-                print(f"[DEBUG] Actualizando embedding para {stock_id}...")
+                print(f"  [DEBUG] Obteniendo embeddings para {stock_id}...")
                 
-                # Obtener embedding
-                embedding = recommender._get_embedding(normalized_text)
-                if embedding:
-                    print(f"[DEBUG] Embedding obtenido para {stock_id}, longitud: {len(embedding)}")
-                    # Convertir embedding a Decimal
-                    embedding_decimal = _convert_to_decimal(embedding)
-                    print(f"[DEBUG] Embedding convertido a Decimal, longitud: {len(embedding_decimal)}")
-                    
-                    # Preparar item para DynamoDB
-                    item = {
-                        "stockId": stock_id,
-                        "lastUpdate": now.isoformat(),
-                        "embedding": embedding_decimal,
-                        "text": normalized_text,
-                        "original_text": f"{car['make']} {car['model']} {car.get('version', '')} {car['year']}"
-                    }
-                    
-                    try:
-                        # Guardar en DynamoDB
-                        print(f"[DEBUG] Intentando guardar en tabla {recommender.embeddings_table}...")
-                        response = recommender.embeddings_db.put_item(
-                            Item=item,
-                            ReturnConsumedCapacity='TOTAL'
-                        )
-                        print(f"[DEBUG] Respuesta de DynamoDB: {json.dumps(response, ensure_ascii=False)}")
-                        total_updated += 1
-                        print(f"[DEBUG] Embedding actualizado para {stock_id}")
-                    except Exception as db_error:
-                        print(f"[ERROR] Error al guardar en DynamoDB: {str(db_error)}")
-                        print(f"[ERROR] Item que causó el error: {json.dumps({k: str(v) if k == 'embedding' else v for k, v in item.items()}, ensure_ascii=False)}")
-                        total_errors += 1
-                else:
-                    print(f"[ERROR] No se pudo obtener embedding para {stock_id}")
+                # Obtener embeddings para cada tipo
+                make_embedding = recommender._get_embedding(make_text)
+                if not make_embedding:
+                    print(f"  [ERROR] Falló embedding de make para {stock_id}")
                     total_errors += 1
-            else:
-                print(f"[DEBUG] Embedding actual para {stock_id}")
+                    continue
+                    
+                model_embedding = recommender._get_embedding(model_text)
+                if not model_embedding:
+                    print(f"  [ERROR] Falló embedding de model para {stock_id}")
+                    total_errors += 1
+                    continue
+                    
+                full_embedding = recommender._get_embedding(full_text)
+                if not full_embedding:
+                    print(f"  [ERROR] Falló embedding de full para {stock_id}")
+                    total_errors += 1
+                    continue
+                
+                print(f"  [DEBUG] Embeddings obtenidos para {stock_id}:")
+                print(f"    - Make embedding longitud: {len(make_embedding)}")
+                print(f"    - Model embedding longitud: {len(model_embedding)}")
+                print(f"    - Full embedding longitud: {len(full_embedding)}")
+                
+                # Convertir embeddings a Decimal
+                make_embedding_decimal = _convert_to_decimal(make_embedding)
+                model_embedding_decimal = _convert_to_decimal(model_embedding)
+                full_embedding_decimal = _convert_to_decimal(full_embedding)
+                
+                # Preparar item para DynamoDB
+                item = {
+                    "stockId": stock_id,
+                    "lastUpdate": now.isoformat(),
+                    "make_embedding": make_embedding_decimal,
+                    "model_embedding": model_embedding_decimal,
+                    "full_embedding": full_embedding_decimal,
+                    "make_text": make_text,
+                    "model_text": model_text,
+                    "full_text": full_text
+                }
+                
+                try:
+                    # Guardar en DynamoDB
+                    print(f"  [DEBUG] Guardando en tabla {recommender.embeddings_table}...")
+                    response = recommender.embeddings_db.put_item(
+                        Item=item,
+                        ReturnConsumedCapacity='TOTAL'
+                    )
+                    print(f"  [DEBUG] Guardado exitoso: {json.dumps(response, ensure_ascii=False)}")
+                    total_updated += 1
+                except Exception as db_error:
+                    print(f"  [ERROR] Error DynamoDB: {str(db_error)}")
+                    print(f"  [ERROR] Item: {json.dumps({k: str(v) if 'embedding' in k else v for k, v in item.items()}, ensure_ascii=False)}")
+                    total_errors += 1
                 
         except Exception as e:
-            print(f"[ERROR] Error procesando auto {stock_id}: {str(e)}")
+            print(f"[ERROR] Error general procesando {stock_id}: {str(e)}")
             total_errors += 1
             continue
+            
+    print(f"[DEBUG] Resumen del lote:")
+    print(f"  - Procesados: {total_processed}")
+    print(f"  - Actualizados: {total_updated}")
+    print(f"  - Saltados: {total_skipped}")
+    print(f"  - Errores: {total_errors}")
             
     return total_processed, total_updated, total_errors
 
@@ -199,16 +246,18 @@ def handler(event, context):
         # Verificar qué embeddings necesitan actualización
         now = datetime.utcnow()
         update_threshold = (now - timedelta(hours=24)).isoformat()
+        print(f"[DEBUG] Umbral de actualización: {update_threshold}")
         
         # Procesar en lotes de 10 autos
         batch_size = 10
         total_processed = 0
         total_updated = 0
         total_errors = 0
+        total_skipped = 0
         
         for i in range(0, len(cars), batch_size):
             batch = cars[i:i + batch_size]
-            print(f"[DEBUG] Procesando lote {i//batch_size + 1} de {(len(cars) + batch_size - 1)//batch_size}")
+            print(f"\n[DEBUG] Procesando lote {i//batch_size + 1} de {(len(cars) + batch_size - 1)//batch_size}")
             
             # Procesar lote
             processed, updated, errors = _process_batch(
@@ -223,26 +272,30 @@ def handler(event, context):
             total_updated += updated
             total_errors += errors
             
-            # Verificar tiempo restante
-            if context and context.get_remaining_time_in_millis() < 60000:  # 1 minuto
-                print("[WARN] Quedan menos de 60 segundos, deteniendo procesamiento...")
-                break
+        print("\n[DEBUG] Resumen final:")
+        print(f"  - Total procesados: {total_processed}")
+        print(f"  - Total actualizados: {total_updated}")
+        print(f"  - Total saltados: {total_skipped}")
+        print(f"  - Total errores: {total_errors}")
         
-        # Generar reporte
-        report = {
-            "timestamp": now.isoformat(),
-            "total_processed": total_processed,
-            "total_updated": total_updated,
-            "total_errors": total_errors,
-            "total_skipped": total_processed - total_updated - total_errors,
-            "remaining_cars": len(cars) - total_processed
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "message": "Actualización de embeddings completada",
+                "total_processed": total_processed,
+                "total_updated": total_updated,
+                "total_skipped": total_skipped,
+                "total_errors": total_errors
+            })
         }
         
-        print(f"[DEBUG] Reporte final: {json.dumps(report, ensure_ascii=False)}")
-        return report
-        
     except Exception as e:
-        print(f"[ERROR] Error en la actualización de embeddings: {str(e)}")
+        print(f"[ERROR] Error en handler: {str(e)}")
         import traceback
         print(f"[ERROR] Error traceback: {traceback.format_exc()}")
-        raise 
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "error": str(e)
+            })
+        } 

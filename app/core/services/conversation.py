@@ -7,6 +7,7 @@ from decimal import Decimal
 from core.services.car_recommender import CarRecommender
 from core.services.prompt_optimizer import PromptOptimizer
 from openai import OpenAI
+from core.services.prospect_service import ProspectService
 
 def _convert_decimals(obj):
     """
@@ -43,28 +44,55 @@ class ConversationService:
         self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
         self.summary_update_threshold = 5  # Número de mensajes antes de actualizar el resumen
 
-    def _generate_summary(self, messages: List[Dict[str, str]]) -> str:
+    def _generate_summary(self, messages: List[Dict[str, str]], whatsapp_number: str) -> str:
         """
         Genera un resumen de la conversación usando GPT.
         
         Args:
             messages: Lista de mensajes a resumir
+            whatsapp_number: Número de WhatsApp del usuario
             
         Returns:
-            Resumen de la conversación
+            Resumen de la conversación que incluye el número de teléfono, intención del usuario,
+            autos consultados y seleccionados
         """
         try:
             # Preparar prompt para resumen
             summary_prompt = [
-                {"role": "system", "content": "Eres un asistente que resume conversaciones de manera concisa. Enfócate en las preferencias del cliente, autos mencionados y decisiones tomadas."},
-                {"role": "user", "content": f"Resume esta conversación de manera concisa:\n{json.dumps(messages, ensure_ascii=False)}"}
+                {"role": "system", "content": """Eres un asistente que resume conversaciones de manera concisa y estructurada. 
+                Tu resumen DEBE incluir:
+                1. El número de teléfono del usuario (whatsapp_number)
+                2. La intención principal del usuario (qué está buscando)
+                3. Las preferencias específicas mencionadas (marca, modelo, precio, etc.)
+                4. Los autos consultados (todos los autos que el usuario ha visto o preguntado por ellos)
+                5. Los autos seleccionados (autos que el usuario ha mostrado interés específico en comprar)
+                6. Las decisiones o acuerdos tomados
+                
+                Formato del resumen:
+                Número: [whatsapp_number]
+                Intención: [descripción clara de lo que busca el usuario]
+                Preferencias: [lista de preferencias mencionadas]
+                Autos consultados: [lista de stockIds de autos que el usuario ha visto o preguntado]
+                Autos seleccionados: [lista de stockIds de autos que el usuario ha mostrado interés en comprar]
+                Estado: [decisiones o acuerdos tomados]
+                
+                Para identificar autos:
+                - Busca patrones como "[stockId]" en los mensajes
+                - Incluye TODOS los stockIds mencionados en "Autos consultados"
+                - Solo incluye en "Autos seleccionados" aquellos donde el usuario expresó interés específico en comprar
+                - Si no hay autos consultados o seleccionados, escribe "Ninguno" en esa sección
+                
+                Sé conciso pero incluye TODOS los elementos requeridos."""},
+                {"role": "user", "content": f"""Genera un resumen estructurado de esta conversación:
+                Número de WhatsApp: {whatsapp_number}
+                Mensajes: {json.dumps(messages, ensure_ascii=False)}"""}
             ]
             
             # Obtener resumen de GPT
             response = self.client.chat.completions.create(
                 model="gpt-3.5-turbo",  # Modelo más económico para resúmenes
                 messages=summary_prompt,
-                max_tokens=150,
+                max_tokens=250,  # Aumentado para dar espacio al formato estructurado
                 temperature=0.3
             )
             
@@ -338,7 +366,7 @@ class ConversationService:
                         })
                 
                 # Generar y guardar nuevo resumen
-                summary = self._generate_summary(messages)
+                summary = self._generate_summary(messages, whatsapp_number)
                 if summary:
                     self.table.put_item(
                         Item={
@@ -568,34 +596,43 @@ Responde solo con el número de tu calificación (1, 2, 3, 4 o 5)."""
 conversation_service = ConversationService()
 car_recommender = CarRecommender()
 prompt_optimizer = PromptOptimizer()
+prospect_service = ProspectService()
 
 # Definición de herramientas disponibles
 available_functions = {
-    "get_car_recommendations": car_recommender.get_recommendations,
     "search_by_make_model": car_recommender.search_by_make_model,
     "search_by_price_range": car_recommender.search_by_price_range,
+    "get_car_recommendations": car_recommender.get_recommendations,
     "get_financing_options": car_recommender.get_financing_options,
     "get_car_details": car_recommender.get_car_details,
     "send_msat": conversation_service.send_msat_message,
-    "process_msat": conversation_service.process_msat_response
+    "process_msat": conversation_service.process_msat_response,
+    "save_appointment": prospect_service.save_appointment,
+    "get_prospect_appointments": prospect_service.get_prospect_appointments,
+    "update_appointment_status": prospect_service.update_appointment_status,
+    "check_availability": prospect_service.check_availability,
 }
 
 # Definición de esquemas de funciones para OpenAI
 function_schemas = [
     {
-        "name": "get_car_recommendations",
-        "description": "Obtiene recomendaciones de autos basadas en una descripción textual. IMPORTANTE: Al mostrar los resultados, DEBES usar EXACTAMENTE los mismos términos que vienen en el catálogo para marca, modelo, versión, etc. No modificar, abreviar o inventar nombres. Por ejemplo, si en el catálogo aparece 'make: Volkswagen, model: Golf, version: GTI Performance', usar exactamente esos términos. Esto es crucial para que las búsquedas posteriores funcionen correctamente.",
+        "name": "search_by_make_model",
+        "description": "PRIMERA OPCIÓN para buscar autos por marca y/o modelo. Usar esta función SIEMPRE que el usuario mencione una marca o modelo específico, incluso si también menciona otras características. Esta función es más precisa para búsquedas de marca/modelo porque usa embeddings especializados. IMPORTANTE: Al mostrar los resultados, DEBES usar EXACTAMENTE los mismos términos que vienen en el catálogo para marca, modelo, versión, etc. No modificar, abreviar o inventar nombres.",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {
+                "make": {
                     "type": "string",
-                    "description": "Descripción de las preferencias del cliente (ej: 'un auto económico familiar'). IMPORTANTE: Solo mencionar características que estén en los datos del auto."
+                    "description": "Marca del auto (ej: 'toyota', 'honda', 'volkswagen'). IMPORTANTE: Usar exactamente el nombre de la marca como aparece en el catálogo."
                 },
-                "max_recommendations": {
+                "model": {
+                    "type": "string",
+                    "description": "Modelo del auto (ej: 'corolla', 'civic', 'golf'). IMPORTANTE: Usar exactamente el nombre del modelo como aparece en el catálogo."
+                },
+                "limit": {
                     "type": "integer",
-                    "description": "Número máximo de recomendaciones a retornar",
-                    "default": 3
+                    "description": "Número máximo de resultados",
+                    "default": 10
                 },
                 "min_similarity": {
                     "type": "number",
@@ -603,35 +640,12 @@ function_schemas = [
                     "default": 0.7
                 }
             },
-            "required": ["query"]
-        }
-    },
-    {
-        "name": "search_by_make_model",
-        "description": "Busca autos por marca y modelo específicos",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "make": {
-                    "type": "string",
-                    "description": "Marca del auto (ej: 'toyota', 'honda')"
-                },
-                "model": {
-                    "type": "string",
-                    "description": "Modelo del auto (ej: 'corolla', 'civic')"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Número máximo de resultados",
-                    "default": 10
-                }
-            },
             "required": ["make"]
         }
     },
     {
         "name": "search_by_price_range",
-        "description": "Busca autos dentro de un rango de precio y/o año. Puedes buscar por precio mínimo, máximo, o ambos, y opcionalmente por año. También puedes buscar autos con características específicas como bluetooth o carplay.",
+        "description": "Busca autos dentro de un rango de precio y/o año. Usar esta función cuando el usuario busque específicamente por precio o año. También puedes buscar autos con características específicas como bluetooth o carplay.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -658,6 +672,30 @@ function_schemas = [
                     "default": 0.7
                 }
             }
+        }
+    },
+    {
+        "name": "get_car_recommendations",
+        "description": "ÚLTIMA OPCIÓN para buscar autos. Usar esta función SOLO cuando el usuario NO mencione una marca o modelo específico, y en su lugar busque por características generales (ej: 'un auto económico familiar', 'un SUV espacioso'). NO usar esta función si el usuario menciona una marca o modelo específico - en ese caso usar search_by_make_model. IMPORTANTE: Al mostrar los resultados, DEBES usar EXACTAMENTE los mismos términos que vienen en el catálogo para marca, modelo, versión, etc. No modificar, abreviar o inventar nombres.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Descripción de las preferencias del cliente (ej: 'un auto económico familiar'). IMPORTANTE: Solo mencionar características que estén en los datos del auto. NO usar esta función si el usuario menciona una marca o modelo específico."
+                },
+                "max_recommendations": {
+                    "type": "integer",
+                    "description": "Número máximo de recomendaciones a retornar",
+                    "default": 3
+                },
+                "min_similarity": {
+                    "type": "number",
+                    "description": "Umbral mínimo de similitud para los resultados (0.0 a 1.0)",
+                    "default": 0.7
+                }
+            },
+            "required": ["query"]
         }
     },
     {
@@ -745,6 +783,105 @@ function_schemas = [
                 }
             },
             "required": ["from_number", "rating"]
+        }
+    },
+    {
+        "name": "save_appointment",
+        "description": "Guarda una nueva cita para un prospecto. Usar esta función cuando el usuario quiera agendar una cita para ver un auto específico. IMPORTANTE: Verificar disponibilidad antes de guardar la cita.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "whatsapp_number": {
+                    "type": "string",
+                    "description": "Número de WhatsApp del prospecto"
+                },
+                "prospect_name": {
+                    "type": "string",
+                    "description": "Nombre del prospecto"
+                },
+                "appointment_date": {
+                    "type": "string",
+                    "description": "Fecha de la cita en formato YYYY-MM-DD"
+                },
+                "appointment_time": {
+                    "type": "string",
+                    "description": "Hora de la cita en formato HH:MM"
+                },
+                "stock_id": {
+                    "type": "string",
+                    "description": "ID del auto en el catálogo (stockId)"
+                },
+                "car_details": {
+                    "type": "object",
+                    "description": "Detalles del auto (marca, modelo, versión, etc.)"
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Estado de la cita (pending, confirmed, cancelled)",
+                    "default": "pending"
+                }
+            },
+            "required": ["whatsapp_number", "prospect_name", "appointment_date", "appointment_time", "stock_id", "car_details"]
+        }
+    },
+    {
+        "name": "get_prospect_appointments",
+        "description": "Obtiene las citas de un prospecto. Usar esta función cuando el usuario quiera ver sus citas programadas.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "whatsapp_number": {
+                    "type": "string",
+                    "description": "Número de WhatsApp del prospecto"
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Filtrar por estado de la cita (pending, confirmed, cancelled, completed)",
+                    "enum": ["pending", "confirmed", "cancelled", "completed"]
+                }
+            },
+            "required": ["whatsapp_number"]
+        }
+    },
+    {
+        "name": "update_appointment_status",
+        "description": "Actualiza el estado de una cita. Usar esta función cuando el usuario quiera confirmar o cancelar una cita.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "whatsapp_number": {
+                    "type": "string",
+                    "description": "Número de WhatsApp del prospecto"
+                },
+                "appointment_id": {
+                    "type": "string",
+                    "description": "ID de la cita a actualizar"
+                },
+                "new_status": {
+                    "type": "string",
+                    "description": "Nuevo estado de la cita",
+                    "enum": ["pending", "confirmed", "cancelled", "completed"]
+                }
+            },
+            "required": ["whatsapp_number", "appointment_id", "new_status"]
+        }
+    },
+    {
+        "name": "check_availability",
+        "description": "Verifica la disponibilidad para una fecha y hora específica. Usar esta función ANTES de guardar una nueva cita para asegurar que hay espacio disponible.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": "Fecha a verificar en formato YYYY-MM-DD"
+                },
+                "time": {
+                    "type": "string",
+                    "description": "Hora a verificar en formato HH:MM"
+                }
+            },
+            "required": ["date", "time"]
         }
     }
 ]
