@@ -112,13 +112,6 @@ def process_message(from_number: str, message_body: str) -> str:
                 function_args = json.loads(tool_call.function.arguments)
                 print(f"[DEBUG] Ejecutando función {function_name} con args: {json.dumps(function_args, ensure_ascii=False)}")
                 
-                # Verificar si estamos en un estado apropiado para usar la función
-                if function_name in ["search_by_make_model", "search_by_price_range", "get_car_recommendations"]:
-                    if conversation_context[-1]["role"] == "assistant":
-                        print(f"[DEBUG] ADVERTENCIA: Intento de usar {function_name} en estado {conversation_context[-1]['content']}")
-                        print("[DEBUG] Ignorando función y continuando con conversación normal")
-                        continue
-                
                 function_to_call = available_functions[function_name]
                 function_response = function_to_call(**function_args)
                 print(f"[DEBUG] Respuesta de función {function_name}: {json.dumps(function_response, ensure_ascii=False)}")
@@ -194,6 +187,23 @@ def process_message(from_number: str, message_body: str) -> str:
                     "content": json.dumps(function_response)
                 })
                 print(f"[DEBUG] Tool call {idx + 1} procesado y agregado a mensajes")
+            
+            # Verificar que todos los tool calls tengan respuestas
+            tool_call_ids = {tool_call.id for tool_call in response_message.tool_calls}
+            tool_response_ids = {msg.get("tool_call_id") for msg in messages if msg.get("role") == "tool"}
+            
+            if tool_call_ids != tool_response_ids:
+                print(f"[DEBUG] ADVERTENCIA: Mismatch en tool call IDs. Tool calls: {tool_call_ids}, Responses: {tool_response_ids}")
+                # Asegurar que todos los tool calls tengan respuestas
+                for tool_call in response_message.tool_calls:
+                    if tool_call.id not in tool_response_ids:
+                        print(f"[DEBUG] Agregando respuesta faltante para tool call {tool_call.id}")
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": tool_call.function.name,
+                            "content": json.dumps({"error": "No se pudo procesar esta función"})
+                        })
             
             # Solo hacer segunda llamada a OpenAI si no es un MSAT
             if not any(tool_call.function.name in ["send_msat", "process_msat"] for tool_call in response_message.tool_calls):

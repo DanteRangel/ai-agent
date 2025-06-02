@@ -512,7 +512,7 @@ class CarRecommender:
         model: str = None,
         limit: int = 10,
         min_similarity: float = 0.7,
-        max_batches: int = 3  # Límite de lotes a procesar
+        max_batches: int = 3
     ) -> List[Dict[str, Any]]:
         """
         Busca autos por marca y/o modelo usando embeddings para búsqueda semántica.
@@ -844,7 +844,7 @@ class CarRecommender:
                 
             car = response["Item"]
             
-            return car
+            return _convert_decimal_to_float(car)
             
         except Exception as e:
             print(f"[ERROR] Error obteniendo detalles del auto {stock_id}: {str(e)}")
