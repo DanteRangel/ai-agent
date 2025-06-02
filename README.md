@@ -1,15 +1,15 @@
-# 🤖 Kavak AI Agent
+# 🤖 AI Agent for Car Sales
 
 ## 📱 Ejemplos de Conversación
 
 ### Previsualización de la Conversación
 Aquí puedes ver ejemplos visuales de cómo se ve la conversación en WhatsApp:
 
-![Conversación 1](docs/images/IMG_9031.PNG)
-![Conversación 2](docs/images/IMG_9032.PNG)
-![Conversación 3](docs/images/IMG_9033.PNG)
-![Conversación 4](docs/images/IMG_9034.PNG)
-![Conversación 5](docs/images/IMG_9035.PNG)
+<img src="docs/images/IMG_9031.PNG" width="300px" />
+<img src="docs/images/IMG_9032.PNG" width="300px" />
+<img src="docs/images/IMG_9033.PNG" width="300px" />
+<img src="docs/images/IMG_9034.PNG" width="300px" />
+<img src="docs/images/IMG_9035.PNG" width="300px" />
 
 ### 1. Búsqueda Inicial
 ```
@@ -127,9 +127,9 @@ Responde solo con el número de tu calificación.
 Nos alegra que hayas tenido una gran experiencia con nuestro asistente.
 ```
 
-## 📱 Asistente de IA para Kavak
+## 📱 Asistente de IA para Venta de Autos
 
-Asistente de IA para ayudar a los clientes a encontrar su auto ideal en el catálogo de Kavak.
+Asistente de IA para ayudar a los clientes a encontrar su auto ideal en el catálogo de Autos.
 
 ## Prueba de la Aplicación
 
@@ -248,18 +248,21 @@ graph TB
 
         subgraph Step Functions
             APIG -->|Inicia| SF1[Flujo de Conversación]
-            SF1 -->|Procesa| L1[Lambda Chat]
-            SF1 -->|Actualiza| L2[Lambda Embeddings]
-            SF1 -->|Responde| L3[Lambda Webhook]
-            
-            CW[CloudWatch Events] -->|Diario| SF2[Flujo de Embeddings]
-            SF2 -->|Actualiza| L2
+            SF1 -->|Procesa| L1[Lambda Chat process_message]
+            SF1 -->|Responde| L3[Lambda Webhook send_response]
+            SF1 -->|Guarda Prospecto| L4[Lambda Save Prospecto process_message]
+            SF1 -->|MSAT| L5[Lambda MSAT process_message]
+            CW[CloudWatch Events] -->|Trigger Diario| SF2[Flujo de Embeddings]
+            SF2 -->|Actualiza| L2[Lambda Embeddings update_embeddings]
         end
 
         subgraph DynamoDB
             L1 -->|Lee/Escribe| DB1[Conversaciones]
+            L1 -->|Consulta| DB2[Embeddings]
             L2 -->|Lee/Escribe| DB2[Embeddings]
             L2 -->|Lee| DB3[Catálogo]
+            L4 -->|Guarda| DB4[Prospectos]
+            L5 -->|Guarda| DB5[MSAT]
         end
 
         subgraph OpenAI
@@ -279,24 +282,24 @@ stateDiagram-v2
     [*] --> RecibirMensaje
     RecibirMensaje --> ProcesarMensaje
     ProcesarMensaje --> VerificarContexto
-    
-    VerificarContexto --> BuscarEmbedding: Necesita Embedding
-    VerificarContexto --> GenerarRespuesta: No necesita Embedding
-    
-    BuscarEmbedding --> ActualizarEmbedding: No existe
-    BuscarEmbedding --> GenerarRespuesta: Existe
-    
-    ActualizarEmbedding --> GenerarRespuesta
-    GenerarRespuesta --> EnviarRespuesta
-    EnviarRespuesta --> ActualizarContexto
+
+    VerificarContexto --> GenerarRespuesta
+
+    GenerarRespuesta --> GuardarProspecto: ¿Es agendamiento?
+    GuardarProspecto --> EnviarRespuesta
+    GenerarRespuesta --> EnviarRespuesta: Otro caso
+    EnviarRespuesta --> SolicitarMSAT: ¿Finaliza conversación?
+    SolicitarMSAT --> ProcesarMSAT: Usuario responde MSAT
+    ProcesarMSAT --> ActualizarContexto
+    EnviarRespuesta --> ActualizarContexto: Si no es MSAT
     ActualizarContexto --> [*]
-    
+
     state VerificarContexto {
         [*] --> ConsultarDynamoDB
         ConsultarDynamoDB --> VerificarTimestamp
         VerificarTimestamp --> [*]
     }
-    
+
     state GenerarRespuesta {
         [*] --> ConsultarGPT
         ConsultarGPT --> FormatearRespuesta
@@ -304,26 +307,26 @@ stateDiagram-v2
     }
 ```
 
-#### 2. Flujo de Actualización de Embeddings
+#### 2. Flujo de Actualización de Embeddings (Trigger Diario)
 ```mermaid
 stateDiagram-v2
     [*] --> TriggerDiario
     TriggerDiario --> ObtenerCatalogo
-    
+
     state ProcesarLote {
         [*] --> ObtenerLote
         ObtenerLote --> GenerarEmbedding
         GenerarEmbedding --> GuardarDynamoDB
         GuardarDynamoDB --> [*]
     }
-    
+
     ObtenerCatalogo --> ProcesarLote
     ProcesarLote --> VerificarMasLotes
-    
+
     VerificarMasLotes --> ProcesarLote: Hay más lotes
     VerificarMasLotes --> Finalizar: No hay más lotes
     Finalizar --> [*]
-    
+
     state GenerarEmbedding {
         [*] --> NormalizarTexto
         NormalizarTexto --> ConsultarOpenAI
@@ -421,8 +424,8 @@ AWS_SECRET_ACCESS_KEY=...
 AWS_REGION=us-east-1
 
 # DynamoDB
-CATALOG_TABLE=kavak-catalog-{stage}
-EMBEDDINGS_TABLE=kavak-embeddings-{stage}
+CATALOG_TABLE=ai-agentcatalog-{stage}
+EMBEDDINGS_TABLE=ai-agentembeddings-{stage}
 STAGE=dev|prod
 
 # Twilio
@@ -471,8 +474,8 @@ aws configure
 #### 4. Configurar el Proyecto
 1. Clonar el repositorio:
 ```bash
-git clone git@github.com:DanteRangel/kavak-ai-agent.git
-cd kavak-ai-agent
+git clone git@github.com:DanteRangel/ai-agent.git
+cd ai-agent
 ```
 
 2. Crear y activar entorno virtual:
@@ -500,14 +503,14 @@ docker run -p 8000:8000 amazon/dynamodb-local
 6. Crear tablas localmente:
 ```bash
 aws dynamodb create-table \
-    --table-name kavak-catalog-dev \
+    --table-name ai-agentcatalog-dev \
     --attribute-definitions AttributeName=stockId,AttributeType=S \
     --key-schema AttributeName=stockId,KeyType=HASH \
     --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 \
     --endpoint-url http://localhost:8000
 
 aws dynamodb create-table \
-    --table-name kavak-embeddings-dev \
+    --table-name ai-agentembeddings-dev \
     --attribute-definitions AttributeName=stockId,AttributeType=S \
     --key-schema AttributeName=stockId,KeyType=HASH \
     --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 \
@@ -516,7 +519,7 @@ aws dynamodb create-table \
 
 7. Importar catálogo de prueba:
 ```bash
-python -m app.scripts.import_catalog sample_caso_ai_engineer.csv --table kavak-catalog-dev
+python -m app.scripts.import_catalog sample_caso_ai_engineer.csv --table ai-agentcatalog-dev
 ```
 
 8. Probar localmente:
@@ -532,18 +535,17 @@ sam build
 
 2. Desplegar a desarrollo:
 ```bash
-sam deploy --guided --stack-name kavak-ai-agent-dev
+sam deploy --guided --stack-name ai-agent
 ```
 o si tienes algun problema
 ```bash
-rm -rf .aws-sam/build && sam build --use-container &&  sam deploy --stack-name kavak-ai-agent --parameter-overrides $(cat env.json | jq -r '.Parameters | to_entries | map("\(.key)=\(.value)") | join(" ")')  --no-fail-on-empty-changeset --resolve-s3 --resolve-s3 --capabilities CAPABILITY_IAM
+rm -rf .aws-sam/build && sam build --use-container &&  sam deploy --stack-name ai-agent --parameter-overrides $(cat env.json | jq -r '.Parameters | to_entries | map("\(.key)=\(.value)") | join(" ")')  --no-fail-on-empty-changeset --resolve-s3 --resolve-s3 --capabilities CAPABILITY_IAM
 ```
 
 3. Verificar Step Functions:
    - Ir a AWS Console > Step Functions
    - Verificar que se creó el flujo:
-     - `kavak-ai-agent-dev-conversation-flow`
-     ```
+     - `ai-agent-dev-conversation-flow`
 
 4. Actualizar webhook de Twilio:
    - Copiar la URL de API Gateway del output de SAM
@@ -577,21 +579,34 @@ rm -rf .aws-sam/build && sam build --use-container &&  sam deploy --stack-name k
 
 ### Estructura del Proyecto
 ```
-kavak-ai-agent/
+ai-agent/
 ├── template.yaml         # Configuración de SAM
-├── requirements.txt      # Dependencias de Python
+├── requirements.txt      # Dependencias de Python (global)
 ├── app/
-│   ├── scripts/         # Scripts de utilidad
-│   │   └── import_catalog.sh    # Script para importar catálogo
-│   ├── functions/       # Funciones Lambda
-│   │   ├── chat/       # Función de chat
-│   │   ├── webhook/    # Webhook de WhatsApp
-│   │   └── update_embeddings/  # Actualización de embeddings
-│   ├── core/           # Código compartido
-│   │   ├── services/   # Servicios compartidos
-│   │   └── utils/      # Utilidades
-│   └── layers/         # Capas Lambda compartidas
-└── tests/              # Pruebas unitarias y de integración
+│   ├── __init__.py
+│   ├── requirements.txt  # Dependencias de Python (app)
+│   ├── core/            # Código compartido (servicios, utilidades, etc.)
+│   │   ├── __init__.py
+│   │   ├── process_message/ (Lambda Chat, guarda prospecto y MSAT)
+│   │   ├── update_embeddings/ (Lambda Embeddings)
+│   │   ├── send_response/ (Lambda Webhook (respuesta))
+│   │   ├── send_error_response/ (Lambda Webhook (error))
+│   │   ├── validate_webhook/ (Lambda Webhook (validación))
+│   │   └── webhook/ (Lambda Webhook (general))
+│   └── scripts/         # Scripts de utilidad (por ejemplo, import_catalog)
+├── docs/ (documentación, imágenes, etc.)
+├── statemachine/ (definiciones de Step Functions)
+├── tests/ (pruebas unitarias e integración)
+├── venv (entorno virtual (ignorado en .gitignore))
+├── .aws-sam (build de SAM (ignorado en .gitignore))
+├── node_modules (ignorado en .gitignore)
+├── .ruby-lsp (ignorado en .gitignore)
+├── .gitignore (archivos ignorados en git)
+├── env.json (variables de entorno (ignorado en .gitignore))
+├── samconfig.toml (configuración de SAM (ignorado en .gitignore))
+├── .aws-sam-ignore (archivos ignorados en el build de SAM)
+├── sample_caso_ai_engineer.csv (catálogo de prueba (ignorado en .gitignore))
+└── pytest.ini (configuración de pytest (ignorado en .gitignore))
 ```
 
 ### Importar Catálogo
@@ -624,10 +639,10 @@ pip install jq      # Para procesamiento JSON
 chmod +x app/scripts/import_catalog.sh
 
 # Importar a desarrollo
-./app/scripts/import_catalog.sh catalogo.csv kavak-catalog-dev
+./app/scripts/import_catalog.sh catalogo.csv ai-agentcatalog-dev
 
 # Importar a producción
-./app/scripts/import_catalog.sh catalogo.csv kavak-catalog-prod
+./app/scripts/import_catalog.sh catalogo.csv ai-agentcatalog-prod
 ```
 
 El script:
@@ -641,156 +656,10 @@ El script:
 - Muestra progreso de importación
 
 #### 4. Verificar la Importación
-```bash
-# Contar registros en la tabla
-aws dynamodb scan \
-    --table-name kavak-catalog-dev \
-    --select COUNT \
-    --region us-east-1
-
-# Verificar algunos registros
-aws dynamodb scan \
-    --table-name kavak-catalog-dev \
-    --limit 5 \
-    --region us-east-1
-
-# Verificar estructura de un registro
-aws dynamodb get-item \
-    --table-name kavak-catalog-dev \
-    --key '{"stockId": {"S": "ID_DEL_AUTO"}}' \
-    --region us-east-1
 ```
-
-#### 5. Solución de Problemas
-1. **Error de Dependencias**:
-   ```bash
-   # Verificar instalación de csvkit
-   which csvjson
-   
-   # Verificar instalación de jq
-   which jq
-   ```
-
-2. **Error de Credenciales**:
-   ```bash
-   # Verificar credenciales
-   aws sts get-caller-identity
-   
-   # Configurar credenciales si es necesario
-   aws configure
-   ```
-
-3. **Error de Formato CSV**:
-   - Verificar que el CSV tenga las columnas requeridas
-   - Asegurar que los valores numéricos sean números
-   - Verificar que los booleanos sean "Sí" o "No"
-
-4. **Error de Permisos**:
-   - Verificar que el usuario IAM tenga permisos para DynamoDB
-   - Agregar política `AmazonDynamoDBFullAccess` si es necesario
-
-#### 6. Monitoreo
-1. **CloudWatch Metrics**:
-   - `ConsumedWriteCapacityUnits`
-   - `ThrottledRequests`
-   - `SystemErrors`
-
-2. **DynamoDB Console**:
-   - Verificar métricas de la tabla
-   - Revisar capacidad consumida
-   - Monitorear errores de throttling
-
-## Uso
-
-### Búsqueda de Autos
-- Por descripción: "busca un auto económico familiar"
-- Por marca/modelo: "muéstrame Volkswagens Golf"
-- Por precio: "autos entre 300 y 400 mil pesos"
-- Por características: "autos con bluetooth y carplay"
-
-### Financiamiento
-- "calcula el financiamiento para un auto de 500 mil pesos con enganche de 100 mil"
-- "muéstrame opciones a 48 meses"
-
-### Detalles
-- "dame más detalles del Volkswagen Golf GTI Performance"
-- "muéstrame más Chevrolets Spark ACTIV D"
-
-## Arquitectura AWS
-
-El proyecto utiliza una arquitectura serverless con los siguientes componentes:
-
-- **AWS Lambda**: Para el procesamiento de mensajes y recomendaciones
-- **Amazon API Gateway**: Para exponer los endpoints de la API
-- **Amazon DynamoDB**: Para almacenar el catálogo, embeddings y conversaciones
-- **Amazon CloudWatch**: Para monitoreo y logging
-- **AWS X-Ray**: Para trazabilidad
-- **AWS Step Functions**: Para orquestar el flujo de conversación y actualización de embeddings
 
 ### Flujos de Step Functions
 
-#### 1. Flujo de Conversación
-```mermaid
-graph LR
-    A[Webhook] --> B[Procesar Mensaje]
-    B --> C{¿Necesita Embedding?}
-    C -->|Sí| D[Actualizar Embedding]
-    C -->|No| E[Generar Respuesta]
-    D --> E
-    E --> F[Enviar Respuesta]
-    F --> G[Actualizar Contexto]
-```
+- **Flujo de Conversación** (ver "Flujos Detallados" para el diagrama detallado).
 
-> **Nota**: La actualización de embeddings se maneja internamente dentro del flujo de conversación cuando es necesario, no como un flujo separado.
-
-#### 2. Flujo de Actualización de Embeddings
-```mermaid
-graph LR
-    A[Trigger Diario] --> B[Obtener Catálogo]
-    B --> C[Procesar Lote]
-    C --> D{¿Más Lotes?}
-    D -->|Sí| C
-    D -->|No| E[Finalizar]
-```
-
-## Roadmap
-
-1. **Fase 1: MVP**
-   - Implementación básica de funciones Lambda
-   - Integración con WhatsApp
-   - Sistema de recomendación semántico
-   - Despliegue inicial en AWS
-
-2. **Fase 2: Mejoras**
-   - Optimización de costos
-   - Implementación de caché
-   - Mejoras en recomendaciones
-   - Optimización de prompts
-
-3. **Fase 3: Producción**
-   - Monitoreo avanzado
-   - Auto-scaling
-   - Integración con sistemas existentes
-   - Implementación de CI/CD
-
-## Métricas de Evaluación
-
-- Precisión en recomendaciones
-- Tasa de conversión
-- Satisfacción del usuario
-- Tiempo de respuesta
-- Tasa de resolución de consultas
-- Costos operativos
-- Tiempo de ejecución Lambda
-
-## Contribución
-
-1. Fork el proyecto
-2. Crear una rama para tu feature (`git checkout -b feature/AmazingFeature`)
-3. Commit tus cambios (`git commit -m 'Add some AmazingFeature'`)
-4. Push a la rama (`git push origin feature/AmazingFeature`)
-5. Abrir un Pull Request
-
-## Licencia
-
-Este proyecto es privado y confidencial para Kavak. 
+- **Flujo de Actualización de Embeddings (Trigger Diario)** (ver "Flujos Detallados" para el diagrama detallado).

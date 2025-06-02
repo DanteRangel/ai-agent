@@ -158,21 +158,20 @@ class ProspectService:
             List of prospect's appointments
         """
         try:
-            # Build filter expression
-            filter_expression = None
-            expression_values = {":num": whatsapp_number}
+            # Build query parameters
+            query_params = {
+                "KeyConditionExpression": "whatsappNumber = :num",
+                "ExpressionAttributeValues": {":num": whatsapp_number},
+                "ScanIndexForward": False  # Descending order (most recent first)
+            }
             
+            # Only add filter expression if status is provided
             if status:
-                filter_expression = "status = :status"
-                expression_values[":status"] = status
+                query_params["FilterExpression"] = "status = :status"
+                query_params["ExpressionAttributeValues"][":status"] = status
             
             # Query appointments
-            response = self.table.query(
-                KeyConditionExpression="whatsappNumber = :num",
-                FilterExpression=filter_expression,
-                ExpressionAttributeValues=expression_values,
-                ScanIndexForward=False  # Descending order (most recent first)
-            )
+            response = self.table.query(**query_params)
             
             return _convert_decimals(response.get("Items", []))
             
