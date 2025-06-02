@@ -555,33 +555,48 @@ Responde solo con el número de tu calificación (1, 2, 3, 4 o 5)."""
                     msat_item = pending_msats[0]  # Tomar el más reciente
                     print(f"[DEBUG] Usando MSAT más reciente: {json.dumps(_convert_decimals(msat_item), ensure_ascii=False)}")
                     
-                    # Actualizar estado del MSAT usando la clave primaria completa
-                    update_response = self.table.update_item(
-                        Key={
-                            "conversationId": from_number,
-                            "messageId": msat_item["messageId"]
-                        },
-                        UpdateExpression="SET msatStatus = :status, msatRating = :rating, msatResponseTime = :time",
-                        ExpressionAttributeValues={
-                            ":status": "completed",
-                            ":rating": rating,
-                            ":time": datetime.utcnow().isoformat()
-                        },
-                        ReturnValues="ALL_NEW"
-                    )
+                    # Verificar que tenemos los campos necesarios
+                    if "messageId" not in msat_item:
+                        print("[ERROR] MSAT item no tiene messageId")
+                        return False, "Error interno: MSAT inválido"
+                        
+                    print(f"[DEBUG] Intentando actualizar MSAT con key: conversationId={from_number}, messageId={msat_item['messageId']}")
                     
-                    print(f"[DEBUG] MSAT actualizado: {json.dumps(_convert_decimals(update_response.get('Attributes', {})), ensure_ascii=False)}")
-                    
-                    # Mensaje de agradecimiento personalizado según la calificación
-                    if rating >= 4:
-                        thank_you = "¡Gracias por tu excelente calificación! 🙏 Nos alegra que hayas tenido una gran experiencia con nuestro asistente."
-                    elif rating == 3:
-                        thank_you = "¡Gracias por tu retroalimentación! 🙏 Seguiremos trabajando para mejorar nuestro servicio."
-                    else:
-                        thank_you = "¡Gracias por tu retroalimentación! 🙏 Nos disculpamos por no haber cumplido tus expectativas. Tu opinión nos ayuda a mejorar."
-                    
-                    print(f"[DEBUG] Mensaje de agradecimiento: {thank_you}")
-                    return True, thank_you
+                    try:
+                        # Actualizar estado del MSAT usando la clave primaria completa
+                        update_response = self.table.update_item(
+                            Key={
+                                "conversationId": from_number,
+                                "messageId": msat_item["messageId"]
+                            },
+                            UpdateExpression="SET msatStatus = :status, msatRating = :rating, msatResponseTime = :time",
+                            ExpressionAttributeValues={
+                                ":status": "completed",
+                                ":rating": rating,
+                                ":time": datetime.utcnow().isoformat()
+                            },
+                            ReturnValues="ALL_NEW",
+                            ConditionExpression="attribute_exists(messageId)"  # Asegurar que el item existe
+                        )
+                        
+                        print(f"[DEBUG] MSAT actualizado exitosamente: {json.dumps(_convert_decimals(update_response.get('Attributes', {})), ensure_ascii=False)}")
+                        
+                        # Mensaje de agradecimiento personalizado según la calificación
+                        if rating >= 4:
+                            thank_you = "¡Gracias por tu excelente calificación! 🙏 Nos alegra que hayas tenido una gran experiencia con nuestro asistente."
+                        elif rating == 3:
+                            thank_you = "¡Gracias por tu retroalimentación! 🙏 Seguiremos trabajando para mejorar nuestro servicio."
+                        else:
+                            thank_you = "¡Gracias por tu retroalimentación! 🙏 Nos disculpamos por no haber cumplido tus expectativas. Tu opinión nos ayuda a mejorar."
+                        
+                        print(f"[DEBUG] Mensaje de agradecimiento: {thank_you}")
+                        return True, thank_you
+                        
+                    except Exception as update_error:
+                        print(f"[ERROR] Error al actualizar MSAT: {str(update_error)}")
+                        import traceback
+                        print(f"[ERROR] Error traceback: {traceback.format_exc()}")
+                        return False, "Hubo un error al guardar tu calificación. Por favor, intenta de nuevo."
             
             print("[DEBUG] No se encontró ningún MSAT pendiente válido")
             return False, "Lo siento, no encontré una encuesta de satisfacción pendiente para responder."
@@ -608,9 +623,7 @@ available_functions = {
     "send_msat": conversation_service.send_msat_message,
     "process_msat": conversation_service.process_msat_response,
     "save_appointment": prospect_service.save_appointment,
-    "get_prospect_appointments": prospect_service.get_prospect_appointments,
-    "update_appointment_status": prospect_service.update_appointment_status,
-    "check_availability": prospect_service.check_availability,
+    "get_prospect_appointments": prospect_service.get_prospect_appointments
 }
 
 # Definición de esquemas de funciones para OpenAI
@@ -787,7 +800,7 @@ function_schemas = [
     },
     {
         "name": "save_appointment",
-        "description": "Guarda una nueva cita para un prospecto. Usar esta función cuando el usuario quiera agendar una cita para ver un auto específico. IMPORTANTE: Verificar disponibilidad antes de guardar la cita.",
+        "description": "Guarda una nueva cita para un prospecto. Esta función verifica automáticamente la disponibilidad antes de guardar la cita. Si no hay disponibilidad, retornará un mensaje de error. Si la cita se guarda exitosamente, retornará un mensaje de confirmación con los detalles de la cita.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -811,17 +824,13 @@ function_schemas = [
                     "type": "string",
                     "description": "ID del auto en el catálogo (stockId)"
                 },
-                "car_details": {
-                    "type": "object",
-                    "description": "Detalles del auto (marca, modelo, versión, etc.)"
-                },
                 "status": {
                     "type": "string",
                     "description": "Estado de la cita (pending, confirmed, cancelled)",
                     "default": "pending"
                 }
             },
-            "required": ["whatsapp_number", "prospect_name", "appointment_date", "appointment_time", "stock_id", "car_details"]
+            "required": ["whatsapp_number", "prospect_name", "appointment_date", "appointment_time", "stock_id"]
         }
     },
     {
@@ -841,47 +850,6 @@ function_schemas = [
                 }
             },
             "required": ["whatsapp_number"]
-        }
-    },
-    {
-        "name": "update_appointment_status",
-        "description": "Actualiza el estado de una cita. Usar esta función cuando el usuario quiera confirmar o cancelar una cita.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "whatsapp_number": {
-                    "type": "string",
-                    "description": "Número de WhatsApp del prospecto"
-                },
-                "appointment_id": {
-                    "type": "string",
-                    "description": "ID de la cita a actualizar"
-                },
-                "new_status": {
-                    "type": "string",
-                    "description": "Nuevo estado de la cita",
-                    "enum": ["pending", "confirmed", "cancelled", "completed"]
-                }
-            },
-            "required": ["whatsapp_number", "appointment_id", "new_status"]
-        }
-    },
-    {
-        "name": "check_availability",
-        "description": "Verifica la disponibilidad para una fecha y hora específica. Usar esta función ANTES de guardar una nueva cita para asegurar que hay espacio disponible.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "date": {
-                    "type": "string",
-                    "description": "Fecha a verificar en formato YYYY-MM-DD"
-                },
-                "time": {
-                    "type": "string",
-                    "description": "Hora a verificar en formato HH:MM"
-                }
-            },
-            "required": ["date", "time"]
         }
     }
 ]

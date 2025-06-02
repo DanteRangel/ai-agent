@@ -1,9 +1,10 @@
 import os
 import json
 import boto3
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, timedelta
 from decimal import Decimal
+from app.core.services.car_recommender import CarRecommender
 
 def _convert_decimals(obj):
     """
@@ -23,7 +24,8 @@ class ProspectService:
     def __init__(self):
         """Initializes the service with the DynamoDB table."""
         self.table_name = os.environ.get('PROSPECTS_TABLE', f"kavak-ai-prospects-{os.environ.get('STAGE', 'dev')}")
-        
+        self.cars_table_name = os.environ.get('CARS_TABLE', f"kavak-ai-cars-{os.environ.get('STAGE', 'dev')}")
+        self.car_recommender = CarRecommender()
         # Configure DynamoDB based on environment
         if os.environ.get('STAGE') == 'dev':
             self.dynamodb = boto3.resource(
@@ -46,11 +48,11 @@ class ProspectService:
         appointment_date: str,
         appointment_time: str,
         stock_id: str,
-        car_details: Dict[str, Any],
         status: str = "pending"
-    ) -> bool:
+    ) -> Tuple[bool, str]:
         """
         Saves a new appointment for a prospect.
+        First checks availability for the requested date and time.
         
         Args:
             whatsapp_number: Prospect's WhatsApp number
@@ -58,27 +60,49 @@ class ProspectService:
             appointment_date: Appointment date in YYYY-MM-DD format
             appointment_time: Appointment time in HH:MM format
             stock_id: Car's catalog ID
-            car_details: Car details (make, model, version, etc.)
             status: Appointment status (pending, confirmed, cancelled)
             
         Returns:
-            True if saved successfully
+            Tuple of (success, message) where:
+            - success is True if saved successfully
+            - message contains success message or error description
         """
         try:
+            print(f"[DEBUG] Intentando guardar cita para {whatsapp_number}")
+            print(f"[DEBUG] Parámetros recibidos:")
+            print(f"  - prospect_name: {prospect_name}")
+            print(f"  - appointment_date: {appointment_date}")
+            print(f"  - appointment_time: {appointment_time}")
+            print(f"  - stock_id: {stock_id}")
+            print(f"  - status: {status}")
+            
+            # First check availability
+            print("[DEBUG] Verificando disponibilidad...")
+            is_available = self.check_availability(appointment_date, appointment_time)
+            if not is_available:
+                print("[DEBUG] No hay disponibilidad para la fecha/hora solicitada")
+                return False, "Lo siento, no hay disponibilidad para la fecha y hora solicitada. Por favor, intenta con otro horario."
+            
+            print("[DEBUG] Horario disponible, procediendo a guardar cita...")
+            
             timestamp = datetime.utcnow().isoformat()
             appointment_id = f"{timestamp}#{whatsapp_number}"
+            print(f"[DEBUG] Generated appointment_id: {appointment_id}")
             
             # Convert date and time to datetime for validation
-            appointment_datetime = datetime.strptime(f"{appointment_date} {appointment_time}", "%Y-%m-%d %H:%M")
+            try:
+                appointment_datetime = datetime.strptime(f"{appointment_date} {appointment_time}", "%Y-%m-%d %H:%M")
+                print(f"[DEBUG] Parsed appointment_datetime: {appointment_datetime.isoformat()}")
+            except ValueError as e:
+                print(f"[ERROR] Error parsing date/time: {str(e)}")
+                return False, "El formato de fecha u hora no es válido. Por favor, usa el formato YYYY-MM-DD para la fecha y HH:MM para la hora."
             
             # Validate that appointment is in the future
             if appointment_datetime < datetime.utcnow():
                 print("[ERROR] Appointment date must be in the future")
-                return False
-            
-            # Ensure car_details includes stockId
-            if "stockId" not in car_details:
-                car_details["stockId"] = stock_id
+                print(f"[DEBUG] Current time: {datetime.utcnow().isoformat()}")
+                print(f"[DEBUG] Appointment time: {appointment_datetime.isoformat()}")
+                return False, "La fecha y hora de la cita deben ser en el futuro."
             
             item = {
                 "whatsappNumber": whatsapp_number,
@@ -88,21 +112,35 @@ class ProspectService:
                 "appointmentDate": appointment_date,
                 "appointmentTime": appointment_time,
                 "stockId": stock_id,
-                "carDetails": car_details,
                 "status": status,
                 "lastUpdated": timestamp
             }
             
+            print(f"[DEBUG] Item a guardar: {json.dumps(_convert_decimals(item), ensure_ascii=False)}")
+            print(f"[DEBUG] Usando tabla: {self.table_name}")
+            
             # Save to DynamoDB
-            self.table.put_item(Item=item)
-            print(f"[DEBUG] Appointment saved successfully: {json.dumps(_convert_decimals(item), ensure_ascii=False)}")
-            return True
+            try:
+                response = self.table.put_item(Item=item)
+                print(f"[DEBUG] Respuesta de DynamoDB: {json.dumps(_convert_decimals(response), ensure_ascii=False)}")
+                print("[DEBUG] Appointment saved successfully")
+                
+                car = self.car_recommender.get_car_details(stock_id)
+                car_description = f"{car.get('make', '')} {car.get('model', '')} {car.get('version', '')} {car.get('year', '')}".strip()
+                success_message = f"¡Perfecto, {prospect_name}! Tu cita para ver el {car_description} está confirmada para el {appointment_date} a las {appointment_time}. Nos vemos en Kavak para que puedas conocer tu posible próximo auto. Si tienes alguna pregunta antes de tu cita, no dudes en contactarnos. ¡Te esperamos! 🚗✨"
+                
+                return True, success_message
+            except Exception as e:
+                print(f"[ERROR] Error en put_item: {str(e)}")
+                import traceback
+                print(f"[ERROR] Error traceback: {traceback.format_exc()}")
+                return False, "Hubo un error al guardar la cita. Por favor, intenta de nuevo."
             
         except Exception as e:
             print(f"[ERROR] Error saving appointment: {str(e)}")
             import traceback
             print(f"[ERROR] Error traceback: {traceback.format_exc()}")
-            return False
+            return False, "Hubo un error al procesar tu solicitud. Por favor, intenta de nuevo."
 
     def get_prospect_appointments(
         self,

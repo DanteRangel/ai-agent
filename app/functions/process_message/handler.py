@@ -167,6 +167,25 @@ def process_message(from_number: str, message_body: str) -> str:
                     agent_message = thank_you
                     print("[DEBUG] Respuesta MSAT guardada exitosamente")
                     return agent_message
+                elif function_name == "save_appointment":
+                    print("[DEBUG] Procesando respuesta de save_appointment...")
+                    success, message = function_response
+                    print(f"[DEBUG] Resultado save_appointment - success: {success}, message: {message}")
+                    if success:
+                        # Guardar mensaje de confirmación en la conversación
+                        print("[DEBUG] Guardando mensaje de confirmación en la conversación...")
+                        conversation_service.save_message(
+                            whatsapp_number=from_number,
+                            user_message=message_body,
+                            agent_message=message,
+                            is_msat=False
+                        )
+                        print("[DEBUG] Mensaje de confirmación guardado exitosamente")
+                        agent_message = message
+                        print("[DEBUG] Retornando mensaje de confirmación directamente")
+                        return agent_message
+                    else:
+                        function_response = message  # Usar el mensaje de error retornado
                 
                 messages.append({
                     "role": "tool",

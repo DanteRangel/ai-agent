@@ -833,7 +833,7 @@ class CarRecommender:
             Diccionario con todos los detalles del auto o None si no se encuentra
         """
         try:
-            # Buscar en el catálogo
+            # Buscar en el catálogo usando get_item ya que solo tenemos stockId como HASH key
             response = self.catalog_db.get_item(
                 Key={"stockId": stock_id}
             )
@@ -843,15 +843,6 @@ class CarRecommender:
                 return None
                 
             car = response["Item"]
-            
-            # Obtener embedding si existe
-            embedding_response = self.embeddings_db.get_item(
-                Key={"stockId": stock_id}
-            )
-            
-            if "Item" in embedding_response:
-                car["embedding"] = embedding_response["Item"].get("embedding")
-                car["lastUpdate"] = embedding_response["Item"].get("lastUpdate")
             
             return car
             
