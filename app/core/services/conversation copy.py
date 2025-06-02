@@ -59,30 +59,7 @@ class ConversationService:
         try:
             # Preparar prompt para resumen
             summary_prompt = [
-                {"role": "system", "content": f"""Eres un asistente que resume conversaciones de manera concisa y estructurada. 
-                Tu resumen DEBE incluir:
-                1. El número de teléfono del usuario (whatsapp_number)
-                2. La intención principal del usuario (qué está buscando)
-                3. Las preferencias específicas mencionadas (marca, modelo, precio, etc.)
-                4. Los autos consultados (todos los autos que el usuario ha visto o preguntado por ellos)
-                5. Los autos seleccionados (autos que el usuario ha mostrado interés específico en comprar)
-                6. Las decisiones o acuerdos tomados
-                
-                Formato del resumen:
-                Número: {whatsapp_number}
-                Intención: descripción clara de lo que busca el usuario
-                Preferencias: lista de preferencias mencionadas
-                Autos consultados: lista de stockIds de autos que el usuario ha visto o preguntado ej:[287196, 287197, 287198]
-                Autos seleccionados: lista de stockIds de autos que el usuario ha mostrado interés en comprar ej:[287196]
-                Estado: decisiones o acuerdos tomados
-                
-                Para identificar autos:
-                - Busca patrones como "[stockId]" en los mensajes
-                - Incluye TODOS los stockIds mencionados en "Autos consultados"
-                - Solo incluye en "Autos seleccionados" aquellos donde el usuario expresó interés específico en comprar
-                - Si no hay autos consultados o seleccionados, escribe "Ninguno" en esa sección
-                
-                Sé conciso pero incluye TODOS los elementos requeridos."""},
+                {"role": "system", "content": prompt_optimizer.get_optimized_summary_prompt(whatsapp_number)},
                 {"role": "user", "content": f"""Genera un resumen estructurado de esta conversación:
                 Número de WhatsApp: {whatsapp_number}
                 Mensajes: {json.dumps(messages, ensure_ascii=False)}"""}
@@ -191,7 +168,7 @@ class ConversationService:
         recent_messages: int = 3
     ) -> List[Dict[str, str]]:
         """
-        Obtiene el contexto de la conversación (resumen + mensajes recientes).
+        Obtiene el contexto de la conversación (contexto del sistema + mensajes recientes).
         
         Args:
             whatsapp_number: Número de WhatsApp del usuario
@@ -204,21 +181,6 @@ class ConversationService:
             # Obtener estado del MSAT
             msat_status = self.get_msat_status(whatsapp_number)
             
-            # Obtener todos los mensajes para verificar si es primer contacto
-            all_messages = self.table.query(
-                KeyConditionExpression="conversationId = :cid",
-                ExpressionAttributeValues={":cid": whatsapp_number},
-                ScanIndexForward=False
-            )
-            
-            # Verificar si es primer contacto (no hay mensajes o solo hay un mensaje del usuario)
-            is_first_message = (
-                len(all_messages.get("Items", [])) == 0 or
-                (len(all_messages.get("Items", [])) == 1 and 
-                 "userMessage" in all_messages["Items"][0] and 
-                 "agentMessage" not in all_messages["Items"][0])
-            )
-            
             # Obtener mensajes recientes para el contexto
             recent_messages_response = self.table.query(
                 KeyConditionExpression="conversationId = :cid",
@@ -229,58 +191,12 @@ class ConversationService:
             
             recent_context = []
             
-            # Si es el primer mensaje, usar un prompt simple y directo
-            if is_first_message:
-                system_message = {
-                    "role": "system",
-                    "content": """Eres un asistente de ventas de Kavak. Tu objetivo es ayudar a los usuarios a encontrar y comprar el auto perfecto para ellos.
-
-PRIMER CONTACTO:
-- Saluda al usuario y preséntate como asistente de Kavak
-- Menciona que es la plataforma líder de autos seminuevos
-- Pregunta qué tipo de auto busca
-- Usa un tono amigable y emojis apropiados
-
-IMPORTANTE:
-- NO repitas el saludo si el usuario ya respondió
-- Si el usuario menciona una marca/modelo, busca DIRECTAMENTE usando search_by_make_model
-- Si el usuario menciona un precio, busca usando search_by_price_range
-- Si el usuario menciona características generales, usa get_car_recommendations"""
-                }
-                recent_context.append(system_message)
-            else:
-                # Obtener resumen si existe
-                summary_response = self.table.query(
-                    IndexName="SummaryIndex",
-                    KeyConditionExpression="conversationId = :cid",
-                    ExpressionAttributeValues={":cid": whatsapp_number},
-                    Limit=1
-                )
-                
-                summary_items = summary_response.get("Items", [])
-                if summary_items and "summary" in summary_items[0]:
-                    summary = summary_items[0]["summary"]
-                    if summary:
-                        system_message = f"""Eres un asistente de ventas de Kavak. Tu objetivo es ayudar a los usuarios a encontrar y comprar el auto perfecto para ellos.
-
-CONTEXTO:
-{summary}
-
-INSTRUCCIONES:
-1. Usa el resumen para mantener el contexto
-2. NO preguntes información que ya está en el resumen
-3. NO saludes ni te presentes si ya hay una conversación en curso
-4. Si el usuario menciona una marca/modelo, busca DIRECTAMENTE
-5. Si el usuario menciona un precio, busca por rango de precio
-6. Si el usuario menciona características generales, usa recomendaciones
-7. Al mencionar un auto, incluye su stockId entre corchetes [número]
-8. Para agendar citas, verifica tener: nombre, fecha, hora y stockId donde el stockId es el que aparece en el resumen en la sección 'Autos seleccionados'
-9. IMPORTANTE: Si el resumen muestra un stockId en 'Autos seleccionados', úsalo directamente sin preguntar"""
-                        
-                        recent_context.insert(0, {
-                            "role": "system",
-                            "content": system_message
-                        })
+            # Usar el prompt del sistema del PromptOptimizer
+            system_message = {
+                "role": "system",
+                "content": prompt_optimizer.get_optimized_system_prompt(whatsapp_number)
+            }
+            recent_context.append(system_message)
             
             # Agregar mensajes recientes
             for item in reversed(recent_messages_response.get("Items", [])):
@@ -862,4 +778,3 @@ function_schemas = [
         }
     }
 ]
-

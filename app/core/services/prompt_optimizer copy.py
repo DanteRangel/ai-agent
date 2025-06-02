@@ -6,7 +6,6 @@ from openai import OpenAI
 class PromptOptimizer:
     """Servicio para optimizar prompts y reducir el uso de tokens."""
 
-
     SYSTEM_PROMPT = """Eres un agente comercial de Kavak, plataforma líder de autos seminuevos en México.
 
 Información clave sobre Kavak:
@@ -41,7 +40,7 @@ INSTRUCCIONES CRÍTICAS:
    - SI el usuario repite información: confirma que la tienes
    - NUNCA ignores el contexto de la conversación
    - Tu resumen DEBE incluir:
-        1. El número de teléfono del usuario [whatsapp_number]
+        1. El número de teléfono del usuario whatsapp_number: {replace_number}
         2. La intención principal del usuario, que puede ser una de estas:
             - Buscar un auto específico (mencionar marca/modelo)
             - Agendar una cita para ver un auto
@@ -53,7 +52,7 @@ INSTRUCCIONES CRÍTICAS:
         6. Las decisiones o acuerdos tomados
 
         Formato del resumen:
-        Número: [whatsapp_number]
+        Número: {replace_number}
         Intención: especificar claramente la intención del usuario, por ejemplo:
                     - "El usuario busca un Mercedes Benz"
                     - "El usuario quiere agendar una cita para ver el Mercedes Benz"
@@ -70,7 +69,6 @@ INSTRUCCIONES CRÍTICAS:
    - Al mostrar autos: [stockId] - Marca Modelo Versión Año - Precio - Kilometraje
 
 3. SALUDOS (SOLO EN PRIMER MENSAJE Y SIN MARCA):
-   - Saluda si el usuario no ha respondido a un saludo ej: "Hola, ¿cómo estás?" responder: presentandote y preguntando que te puede ayudar
    - Saluda y preséntate como asistente de Kavak
    - Menciona que es la plataforma líder de autos seminuevos
    - Pregunta qué tipo de auto busca
@@ -156,7 +154,7 @@ DEBES:
     6. Las decisiones o acuerdos tomados
 
     Formato del resumen:
-    Número: [whatsapp_number]
+    Número: {replace_number}
     Intención: descripción clara de lo que busca el usuario
         La intención principal del usuario, que puede ser una de estas:
             - Buscar un auto específico (mencionar marca/modelo)
@@ -175,19 +173,33 @@ DEBES:
     - Si no hay autos consultados o seleccionados, escribe "Ninguno" en esa sección
 
     Sé conciso pero incluye TODOS los elementos requeridos."""
+
     def __init__(self):
         """Inicializa el servicio con OpenAI."""
         self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
         self.system_prompt = self.SYSTEM_PROMPT
-        self.summary_prompt = self.SUMMARY_PROMPT
 
-    def get_optimized_system_prompt(self) -> str:
-        """Retorna el prompt del sistema optimizado."""
-        return self.system_prompt
-
-    def get_optimized_summary_prompt(self) -> str:
-        """Retorna el prompt de resumen optimizado."""
-        return self.summary_prompt
+    def get_optimized_system_prompt(self, whatsapp_number: Optional[str] = None) -> str:
+        """
+        Retorna el prompt del sistema optimizado.
+        
+        Args:
+            whatsapp_number: Número de WhatsApp del usuario (opcional)
+            
+        Returns:
+            Prompt del sistema con el número de WhatsApp inyectado si se proporciona
+        """
+        if whatsapp_number:
+            return self.SYSTEM_PROMPT.replace("{replace_number}", whatsapp_number)
+        return self.SYSTEM_PROMPT
+    
+    def get_optimized_summary_prompt(self, whatsapp_number: Optional[str] = None) -> str:
+        """
+        Retorna el prompt del resumen optimizado.
+        """
+        if whatsapp_number:
+            return self.SUMMARY_PROMPT.replace("{replace_number}", whatsapp_number)
+        return self.SUMMARY_PROMPT
 
     def optimize_messages(
         self,
@@ -222,6 +234,7 @@ DEBES:
             if messages:
                 optimized.append(messages[0])
                 remaining_tokens -= len(messages[0]["content"].split()) * 1.3
+            
             # Incluir mensajes más recientes primero
             for msg in reversed(messages[1:]):
                 msg_tokens = len(msg["content"].split()) * 1.3

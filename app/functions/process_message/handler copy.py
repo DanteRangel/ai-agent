@@ -49,10 +49,7 @@ def process_message(from_number: str, message_body: str) -> str:
         print(f"[DEBUG] Contexto obtenido: {json.dumps(conversation_context, ensure_ascii=False)}")
         
         # Preparar mensajes para OpenAI
-        messages = [
-            {"role": "system", "content": prompt_optimizer.system_prompt}
-        ]
-        
+        messages = []
         # Agregar contexto si existe
         if conversation_context:
             messages.extend(conversation_context)
@@ -68,7 +65,6 @@ def process_message(from_number: str, message_body: str) -> str:
             messages,
             max_tokens=int(os.environ.get("MAX_TOKENS", "1000"))
         )
-        print(f"[DEBUG] Mensajes optimizados: {json.dumps(messages, ensure_ascii=False)}")
         print(f"[DEBUG] Total de mensajes después de optimización: {len(messages)}")
         
         # Obtener respuesta de OpenAI
@@ -85,7 +81,8 @@ def process_message(from_number: str, message_body: str) -> str:
             temperature=float(os.environ.get("TEMPERATURE", "0.7")),
             max_tokens=int(os.environ.get("MAX_TOKENS", "1000"))
         )
-        
+        print(f"[DEBUG] Respuesta de OpenAI: {response}")
+
         response_message = response.choices[0].message
         print(f"[DEBUG] Respuesta inicial de OpenAI: {json.dumps(response_message.model_dump(), ensure_ascii=False)}")
         print(f"[DEBUG] Finish reason: {response.choices[0].finish_reason}")
