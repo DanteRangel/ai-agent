@@ -1,23 +1,11 @@
 version = 0.1
-[default]
-[default.deploy]
-[default.deploy.parameters]
+[prod.deploy.parameters]
 stack_name = "kavak-ai-agent"
-s3_bucket = "kavak-ai-agent-deployment-bucket"
+resolve_s3 = true
 s3_prefix = "kavak-ai-agent"
 region = "us-east-1"
 confirm_changeset = true
 capabilities = "CAPABILITY_IAM"
-parameter_overrides = "Stage=dev,"
-env_file = "env.json"
-image_repositories = []
-
-[default.build]
-[default.build.parameters]
 use_container = true
-
-[default.local_start_api]
-[default.local_start_api.parameters]
-warm_containers = "EAGER"
-parameter_overrides = "Stage=dev"
-env_file = "env.json" 
+parameter_overrides = "Stage=\"prod\" TwilioPhoneNumber=\"+14155238886\" ModelName=\"gpt-4-turbo-preview\" Temperature=\"0.7\" MaxTokens=\"1000\""
+image_repositories = []

@@ -269,11 +269,13 @@ CONTEXTO:
 INSTRUCCIONES:
 1. Usa el resumen para mantener el contexto
 2. NO preguntes información que ya está en el resumen
-3. Si el usuario menciona una marca/modelo, busca DIRECTAMENTE
-4. Si el usuario menciona un precio, busca por rango de precio
-5. Si el usuario menciona características generales, usa recomendaciones
-6. Al mencionar un auto, incluye su stockId entre corchetes [número]
-7. Para agendar citas, verifica tener: nombre, fecha, hora y stockId"""
+3. NO saludes ni te presentes si ya hay una conversación en curso
+4. Si el usuario menciona una marca/modelo, busca DIRECTAMENTE
+5. Si el usuario menciona un precio, busca por rango de precio
+6. Si el usuario menciona características generales, usa recomendaciones
+7. Al mencionar un auto, incluye su stockId entre corchetes [número]
+8. Para agendar citas, verifica tener: nombre, fecha, hora y stockId donde el stockId es el que aparece en el resumen en la sección 'Autos seleccionados'
+9. IMPORTANTE: Si el resumen muestra un stockId en 'Autos seleccionados', úsalo directamente sin preguntar"""
                         
                         recent_context.insert(0, {
                             "role": "system",
@@ -807,13 +809,13 @@ function_schemas = [
     },
     {
         "name": "save_appointment",
-        "description": "Guarda una nueva cita para un prospecto. Esta función verifica automáticamente la disponibilidad antes de guardar la cita. Si no hay disponibilidad, retornará un mensaje de error. Si la cita se guarda exitosamente, retornará un mensaje de confirmación con los detalles de la cita.",
+        "description": "Guarda una nueva cita para un prospecto. IMPORTANTE: Esta función DEBE usar el stockId que aparece en el resumen de la conversación en la sección 'Autos seleccionados'. Por ejemplo, si en el resumen aparece 'Autos seleccionados: [287196]', debes usar EXACTAMENTE '287196' como stock_id. NO preguntes por el stockId si ya está en el resumen. La función verifica automáticamente la disponibilidad antes de guardar la cita. Si no hay disponibilidad, retornará un mensaje de error. Si la cita se guarda exitosamente, retornará un mensaje de confirmación con los detalles de la cita.",
         "parameters": {
             "type": "object",
             "properties": {
                 "whatsapp_number": {
                     "type": "string",
-                    "description": "Número de WhatsApp del prospecto"
+                    "description": "Número de WhatsApp del prospecto, este se obtiene del resumen de la conversacion después de 'Número:'"
                 },
                 "prospect_name": {
                     "type": "string",
@@ -829,7 +831,7 @@ function_schemas = [
                 },
                 "stock_id": {
                     "type": "string",
-                    "description": "ID del auto en el catálogo (stockId)"
+                    "description": "ID del auto en el catálogo (stockId). DEBE ser el stockId que aparece en el resumen en la sección 'Autos seleccionados'. Por ejemplo, si en el resumen aparece 'Autos seleccionados: [287196]', usar exactamente '287196'."
                 },
                 "status": {
                     "type": "string",

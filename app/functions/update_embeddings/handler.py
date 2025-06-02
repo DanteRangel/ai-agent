@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import List, Dict, Any
 from core.services.car_recommender import CarRecommender
 from core.utils.text_processing import normalize_text
+import time
 
 def _convert_to_decimal(obj):
     """
@@ -98,24 +99,26 @@ def _process_batch(
     total_processed = 0
     total_updated = 0
     total_errors = 0
-    total_skipped = 0  # Nuevo contador para registros saltados
+    total_skipped = 0
+    batch_start_time = time.time()
     
-    for car in cars:
+    for idx, car in enumerate(cars):
+        item_start_time = time.time()
         try:
             total_processed += 1
             stock_id = car["stockId"]
             
+            print(f"[DEBUG] [{datetime.now().isoformat()}] Procesando item {idx + 1}/{len(cars)} (stockId: {stock_id})")
+            
             # Generar textos normalizados para cada tipo
+            text_start = time.time()
             make_text = _normalize_car_text(car, "make")
             model_text = _normalize_car_text(car, "model")
             full_text = _normalize_car_text(car, "full")
-            
-            print(f"[DEBUG] Procesando {stock_id}:")
-            print(f"  - Make: {make_text}")
-            print(f"  - Model: {model_text}")
-            print(f"  - Full: {full_text}")
+            print(f"[DEBUG] Texto normalizado en {time.time() - text_start:.2f}s")
             
             # Verificar si necesita actualización
+            check_start = time.time()
             if stock_id not in existing_embeddings:
                 print(f"  [DEBUG] {stock_id} no existe en embeddings")
                 needs_update = True
@@ -141,11 +144,13 @@ def _process_batch(
                     print(f"  [DEBUG] {stock_id} no necesita actualización")
                     needs_update = False
                     total_skipped += 1
+            print(f"[DEBUG] Verificación de actualización en {time.time() - check_start:.2f}s")
             
             if needs_update:
                 print(f"  [DEBUG] Obteniendo embeddings para {stock_id}...")
                 
                 # Obtener embeddings para cada tipo
+                embedding_start = time.time()
                 make_embedding = recommender._get_embedding(make_text)
                 if not make_embedding:
                     print(f"  [ERROR] Falló embedding de make para {stock_id}")
@@ -163,16 +168,14 @@ def _process_batch(
                     print(f"  [ERROR] Falló embedding de full para {stock_id}")
                     total_errors += 1
                     continue
-                
-                print(f"  [DEBUG] Embeddings obtenidos para {stock_id}:")
-                print(f"    - Make embedding longitud: {len(make_embedding)}")
-                print(f"    - Model embedding longitud: {len(model_embedding)}")
-                print(f"    - Full embedding longitud: {len(full_embedding)}")
+                print(f"[DEBUG] Embeddings generados en {time.time() - embedding_start:.2f}s")
                 
                 # Convertir embeddings a Decimal
+                convert_start = time.time()
                 make_embedding_decimal = _convert_to_decimal(make_embedding)
                 model_embedding_decimal = _convert_to_decimal(model_embedding)
                 full_embedding_decimal = _convert_to_decimal(full_embedding)
+                print(f"[DEBUG] Conversión a Decimal en {time.time() - convert_start:.2f}s")
                 
                 # Preparar item para DynamoDB
                 item = {
@@ -188,12 +191,36 @@ def _process_batch(
                 
                 try:
                     # Guardar en DynamoDB
-                    print(f"  [DEBUG] Guardando en tabla {recommender.embeddings_table}...")
-                    response = recommender.embeddings_db.put_item(
-                        Item=item,
-                        ReturnConsumedCapacity='TOTAL'
-                    )
-                    print(f"  [DEBUG] Guardado exitoso: {json.dumps(response, ensure_ascii=False)}")
+                    db_start = time.time()
+                    print(f"  [DEBUG] {'Actualizando' if stock_id in existing_embeddings else 'Creando'} en tabla {recommender.embeddings_table}...")
+                    
+                    if stock_id in existing_embeddings:
+                        # Actualizar item existente
+                        update_expression = "SET lastUpdate = :lu, make_embedding = :me, model_embedding = :moe, full_embedding = :fe, make_text = :mt, model_text = :mot, full_text = :ft"
+                        expression_values = {
+                            ":lu": now.isoformat(),
+                            ":me": make_embedding_decimal,
+                            ":moe": model_embedding_decimal,
+                            ":fe": full_embedding_decimal,
+                            ":mt": make_text,
+                            ":mot": model_text,
+                            ":ft": full_text
+                        }
+                        
+                        response = recommender.embeddings_db.update_item(
+                            Key={"stockId": stock_id},
+                            UpdateExpression=update_expression,
+                            ExpressionAttributeValues=expression_values,
+                            ReturnConsumedCapacity='TOTAL'
+                        )
+                    else:
+                        # Crear nuevo item
+                        response = recommender.embeddings_db.put_item(
+                            Item=item,
+                            ReturnConsumedCapacity='TOTAL'
+                        )
+                        
+                    print(f"  [DEBUG] Operación exitosa en {time.time() - db_start:.2f}s: {json.dumps(response, ensure_ascii=False)}")
                     total_updated += 1
                 except Exception as db_error:
                     print(f"  [ERROR] Error DynamoDB: {str(db_error)}")
@@ -205,7 +232,11 @@ def _process_batch(
             total_errors += 1
             continue
             
-    print(f"[DEBUG] Resumen del lote:")
+        item_time = time.time() - item_start_time
+        print(f"[DEBUG] Item {idx + 1} completado en {item_time:.2f}s")
+            
+    batch_time = time.time() - batch_start_time
+    print(f"[DEBUG] Resumen del lote (completado en {batch_time:.2f}s):")
     print(f"  - Procesados: {total_processed}")
     print(f"  - Actualizados: {total_updated}")
     print(f"  - Saltados: {total_skipped}")
@@ -223,25 +254,30 @@ def handler(event, context):
         context: Contexto de Lambda
     """
     try:
-        print("[DEBUG] Iniciando actualización de embeddings...")
+        start_time = time.time()
+        print(f"[DEBUG] [{datetime.now().isoformat()}] Iniciando actualización de embeddings...")
         
         # Inicializar servicios
+        init_start = time.time()
         recommender = CarRecommender()
+        print(f"[DEBUG] Servicios inicializados en {time.time() - init_start:.2f}s")
         
         # Obtener todos los autos del catálogo
+        catalog_start = time.time()
         print("[DEBUG] Obteniendo catálogo de autos...")
         catalog_response = recommender.catalog_db.scan()
         cars = catalog_response.get("Items", [])
-        print(f"[DEBUG] Se encontraron {len(cars)} autos en el catálogo")
+        print(f"[DEBUG] Se encontraron {len(cars)} autos en el catálogo (en {time.time() - catalog_start:.2f}s)")
         
         # Obtener embeddings existentes
+        embeddings_start = time.time()
         print("[DEBUG] Obteniendo embeddings existentes...")
         embeddings_response = recommender.embeddings_db.scan()
         existing_embeddings = {
             item["stockId"]: item 
             for item in embeddings_response.get("Items", [])
         }
-        print(f"[DEBUG] Se encontraron {len(existing_embeddings)} embeddings existentes")
+        print(f"[DEBUG] Se encontraron {len(existing_embeddings)} embeddings existentes (en {time.time() - embeddings_start:.2f}s)")
         
         # Verificar qué embeddings necesitan actualización
         now = datetime.utcnow()
@@ -256,8 +292,9 @@ def handler(event, context):
         total_skipped = 0
         
         for i in range(0, len(cars), batch_size):
+            batch_start = time.time()
             batch = cars[i:i + batch_size]
-            print(f"\n[DEBUG] Procesando lote {i//batch_size + 1} de {(len(cars) + batch_size - 1)//batch_size}")
+            print(f"\n[DEBUG] [{datetime.now().isoformat()}] Procesando lote {i//batch_size + 1} de {(len(cars) + batch_size - 1)//batch_size}")
             
             # Procesar lote
             processed, updated, errors = _process_batch(
@@ -272,7 +309,11 @@ def handler(event, context):
             total_updated += updated
             total_errors += errors
             
-        print("\n[DEBUG] Resumen final:")
+            batch_time = time.time() - batch_start
+            print(f"[DEBUG] Lote {i//batch_size + 1} completado en {batch_time:.2f}s")
+        
+        total_time = time.time() - start_time
+        print(f"\n[DEBUG] Resumen final (completado en {total_time:.2f}s):")
         print(f"  - Total procesados: {total_processed}")
         print(f"  - Total actualizados: {total_updated}")
         print(f"  - Total saltados: {total_skipped}")
@@ -285,7 +326,8 @@ def handler(event, context):
                 "total_processed": total_processed,
                 "total_updated": total_updated,
                 "total_skipped": total_skipped,
-                "total_errors": total_errors
+                "total_errors": total_errors,
+                "execution_time_seconds": total_time
             })
         }
         

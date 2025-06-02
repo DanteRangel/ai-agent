@@ -1,4 +1,133 @@
-# Kavak AI Agent
+# 🤖 Kavak AI Agent
+
+## 📱 Ejemplos de Conversación
+
+### Previsualización de la Conversación
+Aquí puedes ver ejemplos visuales de cómo se ve la conversación en WhatsApp:
+
+![Conversación 1](docs/images/IMG_9031.PNG)
+![Conversación 2](docs/images/IMG_9032.PNG)
+![Conversación 3](docs/images/IMG_9033.PNG)
+![Conversación 4](docs/images/IMG_9034.PNG)
+![Conversación 5](docs/images/IMG_9035.PNG)
+
+### 1. Búsqueda Inicial
+```
+[Usuario] Hola 👋
+[Bot] ¡Hola! Soy tu asistente para encontrar el auto ideal en Kavak 🚗
+¿Qué tipo de auto estás buscando?
+
+[Usuario] Busco un auto económico familiar
+[Bot] Entiendo que buscas un auto económico y familiar. Te sugiero estas opciones:
+
+🚗 Chevrolet Spark ACTIV D 2021
+💰 $325,000
+📏 5 puertas
+🎵 Bluetooth y CarPlay
+⛽ Económico en consumo
+
+🚗 Volkswagen Vento 2020
+💰 $350,000
+📏 4 puertas
+🎵 Bluetooth y CarPlay
+🛋️ Espacioso
+
+¿Te gustaría saber más detalles de alguno de estos autos?
+```
+
+### 2. Consulta de Características
+```
+[Usuario] ¿Tiene bluetooth el Spark?
+[Bot] ¡Sí! El Chevrolet Spark ACTIV D incluye:
+🎵 Bluetooth
+📱 CarPlay
+🎧 Entrada auxiliar
+🔊 6 bocinas
+
+¿Te gustaría agendar una cita para conocerlo en persona? 
+También puedo mostrarte más opciones si lo prefieres.
+
+[Usuario] Muéstrame más opciones
+[Bot] Aquí tienes más opciones económicas y familiares:
+
+🚗 Nissan Versa 2021
+💰 $340,000
+📏 4 puertas
+🎵 Bluetooth y CarPlay
+🛋️ Amplio espacio interior
+
+🚗 Kia Rio 2020
+💰 $360,000
+📏 4 puertas
+🎵 Bluetooth y CarPlay
+🔋 Bajo consumo de combustible
+
+¿Alguna de estas opciones te interesa? Puedo darte más detalles o ayudarte a calcular el financiamiento.
+```
+
+### 3. Financiamiento
+```
+[Usuario] ¿Cuánto sería la mensualidad del Versa?
+[Bot] Para el Nissan Versa 2021 ($340,000), te muestro las opciones de financiamiento:
+
+📊 Opción 1:
+💰 Enganche: $68,000 (20%)
+📅 Plazo: 48 meses
+💵 Mensualidad: $7,850
+📈 Tasa: 10.9% anual
+
+📊 Opción 2:
+💰 Enganche: $102,000 (30%)
+📅 Plazo: 36 meses
+💵 Mensualidad: $8,200
+📈 Tasa: 10.5% anual
+
+¿Te gustaría agendar una cita para revisar el auto y formalizar el financiamiento?
+```
+
+### 4. Agendamiento de Cita
+```
+[Usuario] Sí, me interesa
+[Bot] Perfecto, para agendar tu cita necesito algunos datos:
+
+1️⃣ ¿Qué día te gustaría visitarnos? (L-V 9:00-18:00, S 9:00-14:00)
+2️⃣ ¿A qué hora te acomoda?
+3️⃣ ¿Cuál es tu nombre completo?
+
+[Usuario] Mañana a las 11
+[Bot] Para agendar tu cita necesito tu nombre completo para registrarte en el sistema.
+
+[Usuario] Juan Pérez
+[Bot] ¡Perfecto! Tu cita ha sido agendada:
+
+📅 Fecha: [Fecha de mañana]
+⏰ Hora: 11:00
+🚗 Auto: Nissan Versa 2021
+👤 Nombre: Juan Pérez
+
+Te enviaré un recordatorio por WhatsApp. ¿Hay algo más en lo que pueda ayudarte?
+```
+
+### 5. Finalización y MSAT
+```
+[Usuario] No, gracias
+[Bot] ¡Gracias por tu interés! 
+
+¿Podrías calificar tu experiencia con nuestro asistente del 1 al 5, donde:
+1 = Muy insatisfecho
+2 = Insatisfecho
+3 = Neutral
+4 = Satisfecho
+5 = Muy satisfecho
+
+Responde solo con el número de tu calificación.
+
+[Usuario] 5
+[Bot] ¡Gracias por tu excelente calificación! 🙏 
+Nos alegra que hayas tenido una gran experiencia con nuestro asistente.
+```
+
+## 📱 Asistente de IA para Kavak
 
 Asistente de IA para ayudar a los clientes a encontrar su auto ideal en el catálogo de Kavak.
 
@@ -69,32 +198,7 @@ Muéstrame más Chevrolets Spark ACTIV D
      - Revisar embeddings en DynamoDB
      - Comprobar el catálogo de autos
 
-### 4. Ejemplos de Conversación
-```
-Usuario: Hola
-Bot: ¡Hola! Soy tu asistente para encontrar el auto ideal en Kavak. ¿Qué tipo de auto estás buscando?
-
-Usuario: Busco un auto económico familiar
-Bot: Entiendo que buscas un auto económico y familiar. Te sugiero estas opciones:
-1. Chevrolet Spark ACTIV D 2021 - $325,000
-   - 5 puertas
-   - Bluetooth y CarPlay
-   - Económico en consumo
-[...]
-
-Usuario: ¿Tiene bluetooth?
-Bot: Sí, el Chevrolet Spark ACTIV D incluye Bluetooth y CarPlay. ¿Te gustaría saber más detalles o ver otras opciones?
-
-Usuario: Muéstrame otras opciones
-Bot: Aquí tienes más opciones económicas y familiares:
-1. Volkswagen Vento 2020 - $350,000
-   - 4 puertas
-   - Bluetooth y CarPlay
-   - Espacioso
-[...]
-```
-
-### 5. Notas Importantes
+### 4. Notas Importantes
 - El sandbox de WhatsApp tiene límites de uso
 - Las respuestas pueden tardar unos segundos
 - El bot mantiene contexto por 24 horas
@@ -429,6 +533,10 @@ sam build
 2. Desplegar a desarrollo:
 ```bash
 sam deploy --guided --stack-name kavak-ai-agent-dev
+```
+o si tienes algun problema
+```bash
+rm -rf .aws-sam/build && sam build --use-container &&  sam deploy --stack-name kavak-ai-agent --parameter-overrides $(cat env.json | jq -r '.Parameters | to_entries | map("\(.key)=\(.value)") | join(" ")')  --no-fail-on-empty-changeset --resolve-s3 --resolve-s3 --capabilities CAPABILITY_IAM
 ```
 
 3. Verificar Step Functions:

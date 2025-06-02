@@ -222,7 +222,7 @@ def process_message(from_number: str, message_body: str) -> str:
                 print(f"[DEBUG] Usage (segunda llamada): {json.dumps(second_response.usage.model_dump(), ensure_ascii=False)}")
                 
                 # Guardar conversación normal solo si no se guardó un MSAT
-                if not any(tool_call.function.name == "send_msat" for tool_call in response_message.tool_calls):
+                if not (response_message.tool_calls and any(tool_call.function.name == "send_msat" for tool_call in response_message.tool_calls)):
                     print("[DEBUG] Guardando conversación normal...")
                     conversation_service.save_message(
                         whatsapp_number=from_number,
@@ -240,7 +240,7 @@ def process_message(from_number: str, message_body: str) -> str:
             print(f"[DEBUG] Respuesta directa de OpenAI: {agent_message}")
             
             # Guardar conversación normal solo si no se guardó un MSAT
-            if not any(tool_call.function.name == "send_msat" for tool_call in response_message.tool_calls):
+            if not (response_message.tool_calls and any(tool_call.function.name == "send_msat" for tool_call in response_message.tool_calls)):
                 print("[DEBUG] Guardando conversación normal...")
                 conversation_service.save_message(
                     whatsapp_number=from_number,

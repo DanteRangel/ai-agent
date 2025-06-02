@@ -4,7 +4,7 @@ import boto3
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, timedelta
 from decimal import Decimal
-from app.core.services.car_recommender import CarRecommender
+from core.services.car_recommender import CarRecommender
 
 def _convert_decimals(obj):
     """

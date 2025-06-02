@@ -192,15 +192,12 @@ Resources:
       Environment:
         Variables:
           PYTHONPATH: /var/task/app
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          TWILIO_PHONE_NUMBER: !Ref TwilioPhoneNumber
       Timeout: 10
       Policies:
         - CloudWatchLogsFullAccess
-        - Statement:
-            - Effect: Allow
-              Action:
-                - dynamodb:GetItem
-                - dynamodb:Query
-              Resource: !GetAtt ConversationsTable.Arn
 
   SendErrorResponseFunction:
     Type: AWS::Serverless::Function
@@ -210,15 +207,12 @@ Resources:
       Environment:
         Variables:
           PYTHONPATH: /var/task/app
+          TWILIO_ACCOUNT_SID: !Ref TwilioAccountSid
+          TWILIO_AUTH_TOKEN: !Ref TwilioAuthToken
+          TWILIO_PHONE_NUMBER: !Ref TwilioPhoneNumber
       Timeout: 10
       Policies:
         - CloudWatchLogsFullAccess
-        - Statement:
-            - Effect: Allow
-              Action:
-                - dynamodb:GetItem
-                - dynamodb:Query
-              Resource: !GetAtt ConversationsTable.Arn
 
   UpdateEmbeddingsFunction:
     Type: AWS::Serverless::Function
@@ -227,7 +221,7 @@ Resources:
       Handler: functions.update_embeddings.handler.handler
       Environment:
         Variables:
-          PYTHONPATH: /var/task/app
+          PYTHONPATH: /var/task
           STAGE: !Ref Stage
           OPENAI_API_KEY: !Ref OpenAIApiKey
           CATALOG_TABLE: !Ref CatalogTable
