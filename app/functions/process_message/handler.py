@@ -37,7 +37,7 @@ def process_message(from_number: str, message_body: str) -> str:
         print("[DEBUG] Obteniendo contexto de conversación...")
         conversation_context = conversation_service.get_conversation_context(
             from_number,
-            recent_messages=3
+            recent_messages=10
         ) or []  # Asegurar que sea una lista
         
         print(f"[DEBUG] Número de mensajes en contexto: {len(conversation_context)}")
@@ -221,7 +221,26 @@ def process_message(from_number: str, message_body: str) -> str:
                 print(f"[DEBUG] Finish reason (segunda llamada): {second_response.choices[0].finish_reason}")
                 print(f"[DEBUG] Usage (segunda llamada): {json.dumps(second_response.usage.model_dump(), ensure_ascii=False)}")
                 
-                # Guardar conversación normal
+                # Guardar conversación normal solo si no se guardó un MSAT
+                if not any(tool_call.function.name == "send_msat" for tool_call in response_message.tool_calls):
+                    print("[DEBUG] Guardando conversación normal...")
+                    conversation_service.save_message(
+                        whatsapp_number=from_number,
+                        user_message=message_body,
+                        agent_message=agent_message,
+                        is_msat=False
+                    )
+                    print("[DEBUG] Conversación guardada exitosamente")
+                else:
+                    print("[DEBUG] Omitiendo guardado de conversación normal porque ya se guardó un MSAT")
+            else:
+                print("[DEBUG] Omitiendo segunda llamada a OpenAI para MSAT")
+        else:
+            agent_message = response_message.content
+            print(f"[DEBUG] Respuesta directa de OpenAI: {agent_message}")
+            
+            # Guardar conversación normal solo si no se guardó un MSAT
+            if not any(tool_call.function.name == "send_msat" for tool_call in response_message.tool_calls):
                 print("[DEBUG] Guardando conversación normal...")
                 conversation_service.save_message(
                     whatsapp_number=from_number,
@@ -231,20 +250,7 @@ def process_message(from_number: str, message_body: str) -> str:
                 )
                 print("[DEBUG] Conversación guardada exitosamente")
             else:
-                print("[DEBUG] Omitiendo segunda llamada a OpenAI para MSAT")
-        else:
-            agent_message = response_message.content
-            print(f"[DEBUG] Respuesta directa de OpenAI: {agent_message}")
-            
-            # Guardar conversación normal
-            print("[DEBUG] Guardando conversación normal...")
-            conversation_service.save_message(
-                whatsapp_number=from_number,
-                user_message=message_body,
-                agent_message=agent_message,
-                is_msat=False
-            )
-            print("[DEBUG] Conversación guardada exitosamente")
+                print("[DEBUG] Omitiendo guardado de conversación normal porque ya se guardó un MSAT")
         
         print(f"[DEBUG] ===== FIN DE PROCESAMIENTO =====")
         return agent_message

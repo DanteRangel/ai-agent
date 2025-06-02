@@ -647,120 +647,74 @@ class CarRecommender:
         min_price: float = None,
         max_price: float = None,
         year: int = None,
-        limit: int = 10,
-        min_similarity: float = 0.7
+        limit: int = 10
     ) -> List[Dict[str, Any]]:
         """
-        Busca autos dentro de un rango de precio usando embeddings para búsqueda semántica.
+        Busca autos dentro de un rango de precio usando consultas directas a DynamoDB.
+        Los precios se manejan como enteros (sin decimales).
         
         Args:
             min_price: Precio mínimo (opcional)
             max_price: Precio máximo (opcional)
             year: Año específico (opcional)
             limit: Límite de resultados
-            min_similarity: Umbral mínimo de similitud
             
         Returns:
             Lista de autos encontrados
         """
         try:
-            # Construir query de búsqueda
-            search_terms = []
+            # Construir expresión de filtro
+            filter_expressions = []
+            expression_values = {}
             
-            # Agregar términos de precio si existen
-            if min_price is not None and max_price is not None:
-                search_terms.append(f"precio entre {min_price} y {max_price}")
-            elif min_price is not None:
-                search_terms.append(f"precio mayor a {min_price}")
-            elif max_price is not None:
-                search_terms.append(f"precio menor a {max_price}")
+            # Agregar filtros de precio si existen
+            if min_price is not None:
+                # Convertir a entero (sin decimales)
+                min_price_int = int(min_price)
+                filter_expressions.append("price >= :min_price")
+                expression_values[":min_price"] = min_price_int
+                print(f"[DEBUG] Precio mínimo convertido a entero: {min_price_int}")
+                
+            if max_price is not None:
+                # Convertir a entero (sin decimales)
+                max_price_int = int(max_price)
+                filter_expressions.append("price <= :max_price")
+                expression_values[":max_price"] = max_price_int
+                print(f"[DEBUG] Precio máximo convertido a entero: {max_price_int}")
             
-            # Agregar año si existe
+            # Agregar filtro de año si existe
             if year is not None:
-                search_terms.append(f"año {year}")
+                filter_expressions.append("year = :year")
+                expression_values[":year"] = year
             
-            if not search_terms:
+            if not filter_expressions:
                 print("[ERROR] Se requiere al menos un criterio de búsqueda (precio o año)")
                 return []
             
-            # Construir texto de búsqueda
-            search_text = " ".join(search_terms)
-            print(f"[DEBUG] Buscando por texto: {search_text}")
+            # Construir la expresión de filtro completa
+            filter_expression = " AND ".join(filter_expressions)
             
-            # Normalizar la consulta
-            normalized_query = normalize_text(search_text)
-            print(f"[DEBUG] Texto normalizado: {normalized_query}")
+            # Realizar la consulta
+            print(f"[DEBUG] Buscando con filtros: {filter_expression}")
+            print(f"[DEBUG] Valores de expresión: {expression_values}")
             
-            # Obtener embedding de la consulta
-            print("[DEBUG] Obteniendo embedding de la consulta...")
-            query_embedding = self._get_embedding(normalized_query)
-            if not query_embedding:
-                print("[ERROR] No se pudo obtener el embedding de la consulta")
+            # Ahora hacer la búsqueda real
+            response = self.catalog_db.scan(
+                FilterExpression=filter_expression,
+                ExpressionAttributeValues=expression_values,
+                Limit=limit
+            )
+            
+            items = response.get("Items", [])
+            if not items:
+                print("[DEBUG] No se encontraron autos que coincidan con los criterios")
                 return []
-
-            # Obtener embeddings del catálogo
-            print("[DEBUG] Obteniendo embeddings del catálogo...")
-            _, stock_ids, catalog_embeddings = self._get_catalog_embeddings()
-            if not catalog_embeddings:
-                print("[ERROR] No se encontraron embeddings en el catálogo")
-                return []
-            print(f"[DEBUG] Se encontraron {len(catalog_embeddings)} embeddings")
-
-            # Calcular similitudes
-            print("[DEBUG] Calculando similitudes...")
-            similarities = self._calculate_similarity(query_embedding, catalog_embeddings)
-            if not similarities:
-                print("[ERROR] No se pudieron calcular similitudes")
-                return []
-
-            # Ordenar por similitud
-            print("[DEBUG] Ordenando resultados por similitud...")
-            stock_scores = list(zip(stock_ids, similarities))
-            stock_scores.sort(key=lambda x: x[1], reverse=True)
-            
-            # Filtrar por similitud mínima y tomar los mejores
-            top_stocks = [
-                stock_id for stock_id, score in stock_scores 
-                if score >= min_similarity
-            ][:limit]
-            
-            if not top_stocks:
-                print("[DEBUG] No se encontraron autos con similitud suficiente")
-                return []
-            
-            # Obtener información actualizada del catálogo
-            print("[DEBUG] Obteniendo información actualizada del catálogo...")
-            recommendations = []
-            for stock_id in top_stocks:
-                try:
-                    response = self.catalog_db.get_item(Key={"stockId": stock_id})
-                    if "Item" in response:
-                        car = response["Item"]
-                        # Agregar score de similitud
-                        car["similarity_score"] = next(
-                            score for sid, score in stock_scores if sid == stock_id
-                        )
-                        
-                        # Filtrar por precio si se especificó
-                        price = float(car.get("price", 0))
-                        if min_price is not None and price < min_price:
-                            continue
-                        if max_price is not None and price > max_price:
-                            continue
-                            
-                        # Filtrar por año si se especificó
-                        if year is not None and car.get("year") != year:
-                            continue
-                            
-                        recommendations.append(car)
-                except Exception as e:
-                    print(f"[ERROR] Error al obtener auto {stock_id}: {str(e)}")
-                    continue
             
             # Convertir Decimal a float antes de devolver
-            recommendations = _convert_decimal_to_float(recommendations)
-            print(f"[DEBUG] Se encontraron {len(recommendations)} autos")
-            return recommendations
+            results = _convert_decimal_to_float(items)
+            print(f"[DEBUG] Se encontraron {len(results)} autos")
+            print(f"[DEBUG] Primeros resultados: {json.dumps(results[:2], indent=2)}")
+            return results
             
         except Exception as e:
             print(f"[ERROR] Error al buscar por precio: {str(e)}")

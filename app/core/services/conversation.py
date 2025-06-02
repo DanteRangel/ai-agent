@@ -59,7 +59,7 @@ class ConversationService:
         try:
             # Preparar prompt para resumen
             summary_prompt = [
-                {"role": "system", "content": """Eres un asistente que resume conversaciones de manera concisa y estructurada. 
+                {"role": "system", "content": f"""Eres un asistente que resume conversaciones de manera concisa y estructurada. 
                 Tu resumen DEBE incluir:
                 1. El número de teléfono del usuario (whatsapp_number)
                 2. La intención principal del usuario (qué está buscando)
@@ -69,7 +69,7 @@ class ConversationService:
                 6. Las decisiones o acuerdos tomados
                 
                 Formato del resumen:
-                Número: [whatsapp_number]
+                Número: [{whatsapp_number}]
                 Intención: [descripción clara de lo que busca el usuario]
                 Preferencias: [lista de preferencias mencionadas]
                 Autos consultados: [lista de stockIds de autos que el usuario ha visto o preguntado]
@@ -203,18 +203,85 @@ class ConversationService:
         try:
             # Obtener estado del MSAT
             msat_status = self.get_msat_status(whatsapp_number)
-            print(f"[DEBUG] Estado MSAT: {json.dumps(msat_status, ensure_ascii=False)}")
             
-            # Obtener mensajes recientes
-            response = self.table.query(
+            # Obtener todos los mensajes para verificar si es primer contacto
+            all_messages = self.table.query(
                 KeyConditionExpression="conversationId = :cid",
                 ExpressionAttributeValues={":cid": whatsapp_number},
-                ScanIndexForward=False,  # Orden descendente
+                ScanIndexForward=False
+            )
+            
+            # Verificar si es primer contacto (no hay mensajes o solo hay un mensaje del usuario)
+            is_first_message = (
+                len(all_messages.get("Items", [])) == 0 or
+                (len(all_messages.get("Items", [])) == 1 and 
+                 "userMessage" in all_messages["Items"][0] and 
+                 "agentMessage" not in all_messages["Items"][0])
+            )
+            
+            # Obtener mensajes recientes para el contexto
+            recent_messages_response = self.table.query(
+                KeyConditionExpression="conversationId = :cid",
+                ExpressionAttributeValues={":cid": whatsapp_number},
+                ScanIndexForward=False,
                 Limit=recent_messages
             )
             
             recent_context = []
-            for item in reversed(response.get("Items", [])):
+            
+            # Si es el primer mensaje, usar un prompt simple y directo
+            if is_first_message:
+                system_message = {
+                    "role": "system",
+                    "content": """Eres un asistente de ventas de Kavak. Tu objetivo es ayudar a los usuarios a encontrar y comprar el auto perfecto para ellos.
+
+PRIMER CONTACTO:
+- Saluda al usuario y preséntate como asistente de Kavak
+- Menciona que es la plataforma líder de autos seminuevos
+- Pregunta qué tipo de auto busca
+- Usa un tono amigable y emojis apropiados
+
+IMPORTANTE:
+- NO repitas el saludo si el usuario ya respondió
+- Si el usuario menciona una marca/modelo, busca DIRECTAMENTE usando search_by_make_model
+- Si el usuario menciona un precio, busca usando search_by_price_range
+- Si el usuario menciona características generales, usa get_car_recommendations"""
+                }
+                recent_context.append(system_message)
+            else:
+                # Obtener resumen si existe
+                summary_response = self.table.query(
+                    IndexName="SummaryIndex",
+                    KeyConditionExpression="conversationId = :cid",
+                    ExpressionAttributeValues={":cid": whatsapp_number},
+                    Limit=1
+                )
+                
+                summary_items = summary_response.get("Items", [])
+                if summary_items and "summary" in summary_items[0]:
+                    summary = summary_items[0]["summary"]
+                    if summary:
+                        system_message = f"""Eres un asistente de ventas de Kavak. Tu objetivo es ayudar a los usuarios a encontrar y comprar el auto perfecto para ellos.
+
+CONTEXTO:
+{summary}
+
+INSTRUCCIONES:
+1. Usa el resumen para mantener el contexto
+2. NO preguntes información que ya está en el resumen
+3. Si el usuario menciona una marca/modelo, busca DIRECTAMENTE
+4. Si el usuario menciona un precio, busca por rango de precio
+5. Si el usuario menciona características generales, usa recomendaciones
+6. Al mencionar un auto, incluye su stockId entre corchetes [número]
+7. Para agendar citas, verifica tener: nombre, fecha, hora y stockId"""
+                        
+                        recent_context.insert(0, {
+                            "role": "system",
+                            "content": system_message
+                        })
+            
+            # Agregar mensajes recientes
+            for item in reversed(recent_messages_response.get("Items", [])):
                 if "userMessage" in item:
                     recent_context.append({
                         "role": "user",
@@ -224,23 +291,6 @@ class ConversationService:
                     recent_context.append({
                         "role": "assistant",
                         "content": item["agentMessage"]
-                    })
-            
-            # Obtener resumen si existe
-            summary_response = self.table.query(
-                IndexName="SummaryIndex",
-                KeyConditionExpression="conversationId = :cid",
-                ExpressionAttributeValues={":cid": whatsapp_number},
-                Limit=1
-            )
-            
-            summary_items = summary_response.get("Items", [])
-            if summary_items and "summary" in summary_items[0]:
-                summary = summary_items[0]["summary"]
-                if summary:
-                    recent_context.insert(1, {  # Insertar después del mensaje del sistema
-                        "role": "system",
-                        "content": f"Resumen de la conversación anterior: {summary}"
                     })
             
             return recent_context
@@ -249,49 +299,6 @@ class ConversationService:
             print(f"[ERROR] Error al obtener contexto de conversación: {str(e)}")
             import traceback
             print(f"[ERROR] Error traceback: {traceback.format_exc()}")
-            return []
-
-    def get_conversation_history(
-        self, 
-        whatsapp_number: str, 
-        limit: int = 10
-    ) -> List[Dict[str, str]]:
-        """
-        Obtiene el historial de conversación para un número de WhatsApp.
-        
-        Args:
-            whatsapp_number: Número de WhatsApp del usuario
-            limit: Número máximo de mensajes a recuperar
-            
-        Returns:
-            Lista de mensajes en formato para OpenAI
-        """
-        try:
-            response = self.table.query(
-                KeyConditionExpression="conversationId = :cid",
-                ExpressionAttributeValues={":cid": whatsapp_number},
-                ScanIndexForward=False,  # Orden descendente (más recientes primero)
-                Limit=limit
-            )
-
-            # Convertir los mensajes al formato de OpenAI
-            messages = []
-            for item in reversed(response.get("Items", [])):  # Revertir para orden cronológico
-                if "userMessage" in item:
-                    messages.append({
-                        "role": "user",
-                        "content": item["userMessage"]
-                    })
-                if "agentMessage" in item:
-                    messages.append({
-                        "role": "assistant",
-                        "content": item["agentMessage"]
-                    })
-
-            return messages
-
-        except Exception as e:
-            print(f"Error al obtener historial de conversación: {str(e)}")
             return []
 
     def save_message(
