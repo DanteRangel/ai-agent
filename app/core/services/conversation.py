@@ -631,6 +631,7 @@ available_functions = {
     "get_car_details": car_recommender.get_car_details,
     "send_msat": conversation_service.send_msat_message,
     "process_msat": conversation_service.process_msat_response,
+    "save_msat_response": conversation_service.save_msat_response,
     "save_appointment": prospect_service.save_appointment,
     "get_prospect_appointments": prospect_service.get_prospect_appointments
 }

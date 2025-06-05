@@ -663,3 +663,124 @@ El script:
 - **Flujo de Conversación** (ver "Flujos Detallados" para el diagrama detallado).
 
 - **Flujo de Actualización de Embeddings (Trigger Diario)** (ver "Flujos Detallados" para el diagrama detallado).
+
+## Desarrollo Local
+
+### Configuración de DynamoDB Local con Persistencia
+
+Para desarrollo local, usamos DynamoDB en un contenedor Docker con persistencia de datos. Esto permite que los datos sobrevivan a reinicios del contenedor.
+
+1. Detener cualquier instancia existente de DynamoDB local:
+```bash
+docker ps | grep dynamodb-local | awk '{print $1}' | xargs -r docker stop
+```
+
+2. Crear un directorio para la persistencia y ejecutar DynamoDB local:
+```bash
+mkdir -p .dynamodb-local
+docker run -d -p 8000:8000 \
+    -v $(pwd)/.dynamodb-local:/home/dynamodblocal/data \
+    --name dynamodb-local \
+    amazon/dynamodb-local \
+    -jar DynamoDBLocal.jar -sharedDb -dbPath /home/dynamodblocal/data
+```
+
+### Scripts de Utilidad
+
+El proyecto incluye varios scripts para facilitar el desarrollo local:
+
+#### 1. Crear Tablas Locales
+```bash
+# Dar permisos de ejecución
+chmod +x scripts/create_local_tables.sh
+
+# Crear tablas
+./scripts/create_local_tables.sh
+```
+
+Este script:
+- Verifica que DynamoDB local esté corriendo
+- Crea las siguientes tablas:
+  - `kavak-ai-agent-conversations-dev`
+  - `kavak-ai-agent-catalog-dev`
+  - `kavak-ai-agent-embeddings-dev`
+  - `kavak-ai-agent-prospects-dev`
+- Configura índices secundarios globales
+- Usa modo de facturación PAY_PER_REQUEST
+- Muestra progreso con colores
+- Verifica la creación de cada tabla
+
+#### 2. Importar Catálogo Local
+```bash
+# Dar permisos de ejecución
+chmod +x scripts/import_local_catalog.sh
+
+# Importar catálogo
+./scripts/import_local_catalog.sh ruta/al/archivo.csv
+```
+
+Este script:
+- Verifica que DynamoDB local esté corriendo
+- Comprueba que la tabla de catálogo exista
+- Valida que no estemos conectados a AWS
+- Requiere `csvkit` y `jq` instalados
+- Convierte CSV a JSON
+- Transforma tipos de datos automáticamente
+- Muestra progreso de importación
+- Proporciona resumen final
+
+#### 3. Actualizar Embeddings Localmente
+```bash
+PYTHONPATH=app python scripts/update_local_embeddings.py
+```
+
+Este script:
+- Requiere OPENAI_API_KEY configurada
+- Usa DynamoDB local
+- Procesa el catálogo en lotes
+- Actualiza embeddings desactualizados
+- Muestra progreso y resumen
+- Maneja errores y reintentos
+
+### Requisitos para Desarrollo Local
+
+1. Docker instalado y corriendo
+2. AWS CLI instalado
+3. Python 3.9+ con entorno virtual
+4. Herramientas adicionales:
+```bash
+# Instalar csvkit para importación de catálogo
+pip install csvkit
+
+# Instalar jq para procesamiento JSON
+brew install jq  # macOS
+# o
+apt-get install jq  # Linux
+```
+
+### Variables de Entorno para Desarrollo Local
+
+```bash
+# OpenAI
+export OPENAI_API_KEY='tu-api-key'
+
+# AWS Local
+export AWS_ACCESS_KEY_ID='dummy'
+export AWS_SECRET_ACCESS_KEY='dummy'
+export AWS_REGION='us-east-1'
+
+# DynamoDB Local
+export DYNAMODB_ENDPOINT='http://localhost:8000'
+```
+
+### Flujo de Trabajo Local Típico
+
+1. Iniciar DynamoDB local con persistencia
+2. Crear tablas locales
+3. Importar catálogo de prueba
+4. Actualizar embeddings
+5. Ejecutar pruebas locales
+6. Detener DynamoDB local cuando sea necesario:
+```bash
+docker stop dynamodb-local
+```

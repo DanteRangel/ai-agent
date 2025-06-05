@@ -85,3 +85,4 @@ coverage.xml
 *.cover
 .hypothesis/ 
 .aws-sam/
+.dynamodb-local
